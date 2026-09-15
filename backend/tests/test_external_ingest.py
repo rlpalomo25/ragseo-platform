@@ -500,3 +500,19 @@ def test_delete_status_flags_deletable_uploads(client, admin_user, external_dir,
     status2 = client.get("/api/ingest/external/status").json()
     by_name2 = {f["filename"]: f for f in status2["files"]}
     assert by_name2["Leads_Summary_Week_08-28-2026_to_09-04-2026.txt"]["deletable"] is True
+
+
+def test_status_ignores_hidden_placeholder_files(client, admin_user, tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    upload_dir = _upload_path(tmp_path)
+    monkeypatch.setattr(get_settings(), "external_upload_path", upload_dir)
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / ".gitkeep").write_text("", encoding="utf-8")
+    login_admin(client)
+
+    status = client.get("/api/ingest/external/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["totals"]["files"] == 0
+    assert body["files"] == []

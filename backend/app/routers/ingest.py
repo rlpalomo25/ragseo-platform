@@ -269,7 +269,7 @@ def external_status(admin: User = Depends(require_admin), db: DBSession = Depend
     deletable: set[str] = set()
     for folder in folders:
         for filepath in sorted(folder.rglob("*")):
-            if not filepath.is_file():
+            if not filepath.is_file() or filepath.name.startswith("."):
                 continue
             try:
                 source_type, domain, brand = classify(filepath)

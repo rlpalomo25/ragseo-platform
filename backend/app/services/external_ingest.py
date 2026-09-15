@@ -742,7 +742,7 @@ def import_external_folder(data_dir: Path, db, force: bool = False) -> list[dict
         return [{"filename": str(data_dir), "status": "error",
                  "error": "external data path not found"}]
     for path in sorted(data_dir.rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or path.name.startswith("."):
             continue
         try:
             results.append(import_external_file(db, path, force=force))
