@@ -25,10 +25,11 @@ the writable upload folder and imported immediately, hash-deduped.
 
    → `prompts/02-stage-build-context.md`
 
-3. **Push to the VPS, rebuild the backend image, redeploy:**
+3. **Push to the VPS via git, rebuild the backend image, redeploy:**
 
 ```
-   rsync -a /home/roberto/RAGv2/ragseo-platform/ root@157.230.2.51:/opt/ragseo-platform/ --exclude frontend/node_modules --exclude frontend/.next --exclude external_uploads --exclude .env
+   git push origin main
+   ssh root@157.230.2.51 'cd /opt/ragseo-platform && git pull origin main && docker compose -f docker-compose.prod.yml build backend && docker compose -f docker-compose.prod.yml up -d'
    ```
 
    → `prompts/03-push-redeploy.md`
