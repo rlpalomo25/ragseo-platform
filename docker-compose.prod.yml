@@ -1,0 +1,145 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ragseo
+      POSTGRES_USER: ragseo
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragseo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    # ollama/ollama sets ENTRYPOINT ["/bin/ollama"], so the shell must be
+    # invoked via an explicit entrypoint override (else CMD becomes "ollama sh").
+    entrypoint: ["/bin/sh", "-c"]
+    # ollama serve daemonizes (parent exits, child keeps the API up), so a
+    # bare "& ... wait" returns immediately and PID 1 exits -> restart loop.
+    # Passed as a single-element list so sh -c gets the WHOLE script (compose
+    # only keeps the first line of a multiline command scalar).
+    command:
+      - ollama serve & sleep 3; ollama pull nomic-embed-text; while pgrep -x ollama >/dev/null; do sleep 5; done
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q nomic-embed-text"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 180s
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql://ragseo:${DB_PASSWORD:-changeme}@db:5432/ragseo
+      REDIS_URL: redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-a-random-string}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      EMBEDDING_CONTEXT_LENGTH: ${EMBEDDING_CONTEXT_LENGTH:-2048}
+      ENVIRONMENT: production
+      # First-boot gate (docker-entrypoint.sh): run
+      # "RUN_SEED=1 RUN_EXTERNAL=1 docker compose -f docker-compose.prod.yml up -d"
+      # to seed doctrine + import the baked exports folder, then re-up without them.
+      # From then on, weekly exports are uploaded by users through the website
+      # (Weekly Exports -> Upload & Import, POST /api/ingest/external/upload)
+      # into the writable ./external_uploads bind mount; RUN_EXTERNAL is not
+      # needed for the routine weekly flow.
+      RUN_SEED: ${RUN_SEED:-0}
+      RUN_EXTERNAL: ${RUN_EXTERNAL:-0}
+      # Same-origin behind Caddy: CORS is unused, kept for completeness.
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://${DOMAIN:-example.com}}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+    volumes:
+      # Writable folder for website uploads (POST /api/ingest/external/upload).
+      # The baked /app/external copy stays read-only inside the image.
+      - ./external_uploads:/app/uploads/external
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery-worker:
+    build: ./backend
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-2}
+    environment:
+      DATABASE_URL: postgresql://ragseo:${DB_PASSWORD:-changeme}@db:5432/ragseo
+      REDIS_URL: redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-a-random-string}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      EMBEDDING_CONTEXT_LENGTH: ${EMBEDDING_CONTEXT_LENGTH:-2048}
+      ENVIRONMENT: production
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    # Next.js inlines NEXT_PUBLIC_* at build time; leaving it unset keeps the
+    # api.ts fallback "" (Prompt 4) so all calls stay same-origin through Caddy.
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:-example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  ollama:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,30 @@
+# Env & secrets
+.env
+.env.*
+!.env.production.example
+
+# Node
+frontend/node_modules/
+frontend/.next/
+
+# Python
+__pycache__/
+*.py[cod]
+backend/.venv/
+backend/tests/files/
+
+# Runtime uploads (writable service dir, kept out of git)
+external_uploads/
+
+# Raw weekly export dump. The Dockerfile bakes backend/external (tracked), so a
+# VPS clone is self-contained; 09042026 is only a convenience source for
+# backend/scripts/sync_doctrine.sh and stays out of git.
+09042026/
+
+# Session notes frequently carry live prod passwords (VPS .env values, base64
+# admin-rotation one-liner). Never commit them; the real values live in
+# /tmp/opencode/server.env and on the VPS .env.
+CONTEXT-*.md
+
+# OS / editor
+.DS_Store

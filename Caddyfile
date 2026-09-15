@@ -1,0 +1,41 @@
+# Interim plain-HTTP catch-all: browsers send NO SNI for IP literals, so Caddy
+# cannot serve HTTPS for the raw IP reliably (ERR_SSL_PROTOCOL_ERROR). Until a
+# real domain + DNS exist we serve HTTP on :80; the backend sets the session
+# cookie without Secure when it sees X-Forwarded-Proto: http, so login works.
+#
+# When you add a real domain: replace this with an explicit HTTPS site, e.g.
+#   yourdomain.com {
+#       encode zstd gzip
+#       handle /api/* { reverse_proxy backend:8000 }
+#       handle { reverse_proxy frontend:3000 }
+#   }
+# (no `tls internal`) so Let's Encrypt issues a trusted cert, and set DOMAIN in
+# .env. Caddy then sends X-Forwarded-Proto: https and Secure cookies return.
+:80 {
+    encode zstd gzip
+
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # FastAPI interactive docs + OpenAPI schema from the backend.
+    handle /docs {
+        reverse_proxy backend:8000
+    }
+    handle /docs/* {
+        reverse_proxy backend:8000
+    }
+    handle /redoc {
+        reverse_proxy backend:8000
+    }
+    handle /redoc/* {
+        reverse_proxy backend:8000
+    }
+    handle /openapi.json {
+        reverse_proxy backend:8000
+    }
+
+    handle {
+        reverse_proxy frontend:3000
+    }
+}

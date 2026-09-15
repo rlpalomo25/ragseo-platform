@@ -1,0 +1,29 @@
+# ----------------------------------------
+# Events
+# Account: MasterShield
+# Property: www.mastershield.com - GA4
+# ----------------------------------------
+# 
+# All Users
+# Start date: 20260731
+# End date: 20260828
+Event name,Event count,Total users,Event count per active user,Total revenue
+page_view,2354,1253,1.907617504051864,0
+session_start,1571,1254,1.2741281427412814,0
+user_engagement,1352,657,2.083204930662558,0
+first_visit,1206,1202,1.0033277870216306,0
+view_search_results,10,8,1.25,0
+need_to_anow_about_gutters_guide,2,2,1,0
+
+# Event name exactly matches 'page_view',
+AND
+,Country exactly matches 'United States'
+# Start date: 20260731
+# End date: 20260828
+Event name,Event count,Total users,Event count per active user,Total revenue
+page_view,1940,929,2.129527991218441,0
+session_start,0,0,0,0
+user_engagement,0,0,0,0
+first_visit,0,0,0,0
+view_search_results,0,0,0,0
+need_to_anow_about_gutters_guide,0,0,0,0

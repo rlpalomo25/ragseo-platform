@@ -1,0 +1,13 @@
+*
+!requirements.txt
+!alembic.ini
+!alembic/
+!app/
+!scripts/
+!Dockerfile
+!docker-entrypoint.sh
+!doctrine/
+!external/
+__pycache__/
+*.py[cod]
+tests/

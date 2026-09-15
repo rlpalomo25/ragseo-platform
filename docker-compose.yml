@@ -1,0 +1,138 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: ragseo
+      POSTGRES_USER: ragseo
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragseo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    # Ollama clamps nomic-embed-text to a 2048-token context (all tags); the
+    # backend truncates embedding inputs to fit rather than splitting doctrine
+    # chunks (Doc 122). OLLAMA_CONTEXT_LENGTH is kept for other model types.
+    # The model is pre-pulled on boot so first embedding requests never block
+    # on a large download (and risk timing out); backend/worker only start once
+    # the model is actually present (grep in the healthcheck).
+    # ollama/ollama sets ENTRYPOINT ["/bin/ollama"], so the shell must be
+    # invoked via an explicit entrypoint override.
+    entrypoint: ["/bin/sh", "-c"]
+    # ollama serve daemonizes (parent exits, child keeps the API up), so a
+    # bare "& ... wait" returns immediately and PID 1 exits -> restart loop.
+    # Passed as a single-element list so sh -c gets the WHOLE script (compose
+    # only keeps the first line of a multiline command scalar).
+    command:
+      - ollama serve & sleep 3; ollama pull nomic-embed-text; while pgrep -x ollama >/dev/null; do sleep 5; done
+    environment:
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list | grep -q nomic-embed-text"]
+      interval: 15s
+      timeout: 30s
+      retries: 10
+      start_period: 180s
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://ragseo:${DB_PASSWORD:-changeme}@db:5432/ragseo
+      REDIS_URL: redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-a-random-string}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      EMBEDDING_CONTEXT_LENGTH: ${EMBEDDING_CONTEXT_LENGTH:-2048}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ../:/app/doctrine:ro
+      # Weekly external market-data exports (GSC/GA4/Ubersuggest/calls/leads).
+      - ./09042026:/app/external:ro
+      # Writable folder for website uploads (POST /api/ingest/external/upload).
+      - ./external_uploads:/app/uploads/external
+      # Dev bind-mount: app code is live, so code fixes deploy on `up -d`
+      # without image rebuilds (the image still bakes a copy for prod runs).
+      - ./backend/app:/app/app:ro
+    restart: unless-stopped
+
+  celery-worker:
+    build: ./backend
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2
+    environment:
+      DATABASE_URL: postgresql://ragseo:${DB_PASSWORD:-changeme}@db:5432/ragseo
+      REDIS_URL: redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SECRET_KEY: ${SECRET_KEY:-change-this-to-a-random-string}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-nomic-embed-text}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-768}
+      EMBEDDING_CONTEXT_LENGTH: ${EMBEDDING_CONTEXT_LENGTH:-2048}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ../:/app/doctrine:ro
+      - ./09042026:/app/external:ro
+      - ./external_uploads:/app/uploads/external
+      - ./backend/app:/app/app:ro
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  ollama:

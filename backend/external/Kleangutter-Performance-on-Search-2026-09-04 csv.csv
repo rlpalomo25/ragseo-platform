@@ -1,0 +1,16 @@
+# ----------------------------------------
+# Events: Event name
+# Account: KleanGutter
+# Property: Kleangutter.com - GA4
+# ----------------------------------------
+# 
+# All Users
+# Start date: 20260827
+# End date: 20260903
+Event name,Event count,Total users,Event count per active user,Total revenue
+page_view,200,98,2.127659574468085,0
+user_engagement,146,51,2.92,0
+session_start,132,98,1.4042553191489362,0
+first_visit,89,89,1,0
+submit_lead_form,1,1,1,0
+thank_you,1,1,1,0
