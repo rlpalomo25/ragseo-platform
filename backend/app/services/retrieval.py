@@ -5,7 +5,7 @@ rank fusion (RRF). Degrades to keyword-only search when embeddings are not
 configured or not yet computed.
 """
 from dataclasses import dataclass
-from sqlalchemy import text as sql_text
+from sqlalchemy import bindparam, text as sql_text
 from sqlalchemy.orm import Session as DBSession
 
 from app.config import get_settings
@@ -64,7 +64,7 @@ def _vector_search(db: DBSession, query_embedding: list[float], top_k: int,
     params: dict = {"embedding": vector_literal, "top_k": top_k}
     if doc_numbers:
         filter_clause = "AND d.doc_number IN :doc_numbers"
-        params["doc_numbers"] = tuple(doc_numbers)
+        params["doc_numbers"] = list(doc_numbers)
 
     sql = sql_text(f"""
         SELECT d.doc_number, d.title, d.series, d.version,
@@ -77,6 +77,8 @@ def _vector_search(db: DBSession, query_embedding: list[float], top_k: int,
         ORDER BY c.embedding <=> CAST(:embedding AS vector)
         LIMIT :top_k
     """)
+    if doc_numbers:
+        sql = sql.bindparams(bindparam("doc_numbers", expanding=True))
     rows = db.execute(sql, params).fetchall()
     return [
         RetrievedChunk(
@@ -99,13 +101,15 @@ def _keyword_search(db: DBSession, query: str, top_k: int,
         return []
 
     # Rank by how many query terms each chunk/doc matches (title hits weigh 2x).
+    # Case-insensitive match via lower()/LIKE — dialect-agnostic (no ILIKE needed).
     score_expr = " + ".join(
-        f"((CASE WHEN c.content ILIKE :term{i} THEN 1 ELSE 0 END)"
-        f" + (CASE WHEN d.title ILIKE :term{i} THEN 2 ELSE 0 END))"
+        f"((CASE WHEN lower(c.content) LIKE lower(:term{i}) THEN 1 ELSE 0 END)"
+        f" + (CASE WHEN lower(d.title) LIKE lower(:term{i}) THEN 2 ELSE 0 END))"
         for i in range(len(terms))
     )
     where_clauses = " OR ".join(
-        f"(c.content ILIKE :term{i} OR d.title ILIKE :term{i} OR d.doc_number ILIKE :term{i})"
+        f"(lower(c.content) LIKE lower(:term{i}) OR lower(d.title) LIKE lower(:term{i})"
+        f" OR lower(d.doc_number) LIKE lower(:term{i}))"
         for i in range(len(terms))
     )
     filter_clause = ""
@@ -113,7 +117,7 @@ def _keyword_search(db: DBSession, query: str, top_k: int,
     params["top_k"] = top_k * 2
     if doc_numbers:
         filter_clause = "AND d.doc_number IN :doc_numbers"
-        params["doc_numbers"] = tuple(doc_numbers)
+        params["doc_numbers"] = list(doc_numbers)
 
     sql = sql_text(f"""
         SELECT d.doc_number, d.title, d.series, d.version,
@@ -126,6 +130,8 @@ def _keyword_search(db: DBSession, query: str, top_k: int,
         ORDER BY match_score DESC
         LIMIT :top_k
     """)
+    if doc_numbers:
+        sql = sql.bindparams(bindparam("doc_numbers", expanding=True))
     rows = db.execute(sql, params).fetchall()
     max_score = max((float(r.match_score) for r in rows), default=1.0) or 1.0
     return [

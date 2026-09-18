@@ -40,7 +40,7 @@ Anthropic Claude (`claude-sonnet-4-5`) · Voyage AI embeddings (optional, key no
 
 ### Phase 2 — Agents ✅
 - `services/doctrine.py`: governing-doc loader, provenance stamps, brand config
-  (mastershield→316/130, klean_gutter→320/131, mmgg→324/132), structure-companion map
+  (mastershield→316/130, kleangutter→320/131, mmgg→324/132), structure-companion map
 - `agents/router.py`: intent/brand/content_type/applicable_docs routing
 - `agents/writer.py`: governing docs full-text + supplementary retrieval;
   `===RAGSEO_META===` / `===RAGSEO_CONTENT===` protocol; validated `WriterMeta`;

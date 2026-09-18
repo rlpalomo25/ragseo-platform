@@ -1,7 +1,7 @@
 "use client";
 
-import { use } from "react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { AuthGuard } from "@/components/layout/AuthGuard";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { Header } from "@/components/layout/Header";
@@ -13,8 +13,9 @@ import { DocTableOfContents } from "@/components/docs/DocTableOfContents";
 import { useDoc } from "@/lib/hooks/useDocs";
 import { useDocReferences } from "@/lib/hooks/useDocReferences";
 
-export default function DocDetailPage({ params }: { params: Promise<{ docId: string }> }) {
-  const { docId } = use(params);
+export default function DocDetailPage() {
+  const params = useParams<{ docId: string }>();
+  const docId = typeof params?.docId === "string" ? params.docId : null;
   return (
     <AuthGuard>
       <SkipLink />
@@ -23,7 +24,7 @@ export default function DocDetailPage({ params }: { params: Promise<{ docId: str
         <div className="ml-64 flex-1">
           <Header />
           <main id="main-content" className="p-6" tabIndex={-1}>
-            <DocDetailContent docId={docId} />
+            {docId && <DocDetailContent docId={docId} />}
           </main>
         </div>
       </div>

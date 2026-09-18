@@ -1,6 +1,7 @@
 import re
 import hashlib
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from sqlalchemy.orm import Session as DBSession
 from app.models.document import Document, DocReference
@@ -118,7 +119,7 @@ def ingest_all_docs(db: DBSession) -> dict:
         )
 
     md_files = sorted(doctrine_path.glob("*.md"))
-    stats = {"created": 0, "updated": 0, "skipped": 0, "chunks": 0, "embedding_failures": 0, "errors": []}
+    stats = {"created": 0, "updated": 0, "skipped": 0, "superseded": 0, "chunks": 0, "embedding_failures": 0, "errors": []}
 
     for filepath in md_files:
         if filepath.name.startswith(".") or ":Zone.Identifier" in filepath.name:
@@ -133,11 +134,11 @@ def ingest_all_docs(db: DBSession) -> dict:
             version = extract_version(content)
             doc_type = extract_doc_type(title, filename)
             word_count = len(content.split())
-            last_updated = None
+            now = datetime.now(timezone.utc)
 
-            existing = db.query(Document).filter(Document.filename == filename).first()
-            if existing and existing.file_hash == fhash:
-                has_chunks = db.query(DocChunk).filter(DocChunk.document_id == existing.id).first() is not None
+            existing_by_filename = db.query(Document).filter(Document.filename == filename).first()
+            if existing_by_filename and existing_by_filename.file_hash == fhash:
+                has_chunks = db.query(DocChunk).filter(DocChunk.document_id == existing_by_filename.id).first() is not None
                 needs_backfill = False
                 if settings.embeddings_enabled:
                     if not has_chunks:
@@ -146,7 +147,7 @@ def ingest_all_docs(db: DBSession) -> dict:
                     else:
                         has_vectors = (
                             db.query(DocChunk)
-                            .filter(DocChunk.document_id == existing.id, DocChunk.embedding.isnot(None))
+                            .filter(DocChunk.document_id == existing_by_filename.id, DocChunk.embedding.isnot(None))
                             .first()
                             is not None
                         )
@@ -156,21 +157,29 @@ def ingest_all_docs(db: DBSession) -> dict:
                 if not needs_backfill:
                     stats["skipped"] += 1
                     continue
-                _rechunk_document(db, existing, stats)
+                _rechunk_document(db, existing_by_filename, stats)
                 db.commit()
                 stats["skipped"] += 1
                 continue
 
-            if existing:
-                existing.content = content
-                existing.title = title
-                existing.doc_number = doc_number
-                existing.series = series
-                existing.version = version
-                existing.doc_type = doc_type
-                existing.word_count = word_count
-                existing.file_hash = fhash
-                doc = existing
+            # Check for existing document with same doc_number but different filename (superseded)
+            existing_by_number = db.query(Document).filter(
+                Document.doc_number == doc_number,
+                Document.filename != filename,
+                Document.status == "active"
+            ).first()
+
+            if existing_by_filename:
+                existing_by_filename.content = content
+                existing_by_filename.title = title
+                existing_by_filename.doc_number = doc_number
+                existing_by_filename.series = series
+                existing_by_filename.version = version
+                existing_by_filename.doc_type = doc_type
+                existing_by_filename.word_count = word_count
+                existing_by_filename.file_hash = fhash
+                existing_by_filename.last_updated = now
+                doc = existing_by_filename
                 stats["updated"] += 1
             else:
                 doc = Document(
@@ -183,10 +192,17 @@ def ingest_all_docs(db: DBSession) -> dict:
                     doc_type=doc_type,
                     word_count=word_count,
                     file_hash=fhash,
+                    last_updated=now,
                 )
                 db.add(doc)
                 db.flush()
                 stats["created"] += 1
+
+            # If there's a different active document with the same doc_number, mark it superseded
+            if existing_by_number:
+                existing_by_number.status = "superseded"
+                existing_by_number.last_updated = now
+                stats["superseded"] = stats.get("superseded", 0) + 1
 
             _rechunk_document(db, doc, stats)
 
@@ -196,6 +212,115 @@ def ingest_all_docs(db: DBSession) -> dict:
     db.commit()
 
     all_docs = db.query(Document).all()
+    db.query(DocReference).delete()
+    for doc in all_docs:
+        refs = extract_references(doc.content)
+        for ref in refs:
+            db.add(DocReference(
+                source_doc_id=doc.id,
+                target_doc_number=ref,
+                reference_type="references",
+            ))
+    db.commit()
+
+    return stats
+
+
+def reconcile_doctrine(db: DBSession) -> dict:
+    """Reconcile DB with filesystem: insert new, mark missing, detect superseded.
+
+    Returns stats dict with created, missing, superseded, errors.
+    """
+    doctrine_path = Path(settings.doctrine_path)
+    if not doctrine_path.exists():
+        raise FileNotFoundError(f"Doctrine path not found: {doctrine_path}")
+
+    stats = {"created": 0, "missing": 0, "superseded": 0, "errors": []}
+
+    # Get all active docs from DB
+    db_docs = db.query(Document).filter(Document.status == "active").all()
+    db_by_filename = {d.filename: d for d in db_docs}
+    db_by_number = {d.doc_number: d for d in db_docs}
+
+    # Scan filesystem
+    md_files = sorted(doctrine_path.glob("*.md"))
+    fs_filenames = set()
+
+    for filepath in md_files:
+        if filepath.name.startswith(".") or ":Zone.Identifier" in filepath.name:
+            continue
+        fs_filenames.add(filepath.name)
+
+        try:
+            content = filepath.read_text(encoding="utf-8")
+            fhash = file_hash(str(filepath))
+            filename = filepath.name
+            doc_number = extract_doc_number(filename)
+            title = extract_title(content, filename)
+            series = extract_series(doc_number)
+            version = extract_version(content)
+            doc_type = extract_doc_type(title, filename)
+            word_count = len(content.split())
+            now = datetime.now(timezone.utc)
+
+            existing_by_filename = db_by_filename.get(filename)
+            if existing_by_filename and existing_by_filename.file_hash == fhash:
+                continue  # unchanged
+
+            existing_by_number = db_by_number.get(doc_number)
+
+            if existing_by_filename:
+                # Update existing
+                existing_by_filename.content = content
+                existing_by_filename.title = title
+                existing_by_filename.doc_number = doc_number
+                existing_by_filename.series = series
+                existing_by_filename.version = version
+                existing_by_filename.doc_type = doc_type
+                existing_by_filename.word_count = word_count
+                existing_by_filename.file_hash = fhash
+                existing_by_filename.last_updated = now
+                stats["updated"] = stats.get("updated", 0) + 1
+                _rechunk_document(db, existing_by_filename, stats)
+            else:
+                # Create new
+                doc = Document(
+                    doc_number=doc_number,
+                    title=title,
+                    filename=filename,
+                    content=content,
+                    version=version,
+                    series=series,
+                    doc_type=doc_type,
+                    word_count=word_count,
+                    file_hash=fhash,
+                    last_updated=now,
+                )
+                db.add(doc)
+                db.flush()
+                stats["created"] += 1
+                _rechunk_document(db, doc, stats)
+
+                # Check for superseded (different filename, same doc_number)
+                if existing_by_number and existing_by_number.filename != filename:
+                    existing_by_number.status = "superseded"
+                    existing_by_number.last_updated = now
+                    stats["superseded"] += 1
+
+        except Exception as e:
+            stats["errors"].append(f"{filepath.name}: {str(e)}")
+
+    # Mark DB docs not on filesystem as missing
+    for doc in db_docs:
+        if doc.filename not in fs_filenames:
+            doc.status = "missing"
+            doc.last_updated = datetime.now(timezone.utc)
+            stats["missing"] += 1
+
+    db.commit()
+
+    # Rebuild reference graph
+    all_docs = db.query(Document).filter(Document.status == "active").all()
     db.query(DocReference).delete()
     for doc in all_docs:
         refs = extract_references(doc.content)

@@ -190,3 +190,37 @@ def test_advance_ignores_standalone_tasks(db_session, test_user):
     db_session.commit()
     db_session.refresh(task)
     assert advance_job(db_session, task) is None
+
+
+def test_advance_job_redelivery_does_not_duplicate_next_stage(db_session, test_user):
+    """Fix 5B: a redelivered stage task must not re-dispatch the next stage.
+
+    With acks_late + reject_on_worker_lost, a worker that dies just after
+    committing a stage completion gets its agent task redelivered and
+    ``advance_job`` re-run in the SAME job. Guard 1 (stage already completed)
+    turns that re-entry into a no-op so the next stage (writer) is dispatched
+    exactly once — no duplicate writer stage, no duplicate AgentTask, and the
+    unique (job_id, sequence) constraint stays satisfied.
+    """
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    router_task = stage_task(db_session, latest_stage(db_session, job))
+    writer_before = db_session.query(JobStage).filter(
+        JobStage.job_id == job.id, JobStage.agent_type == "writer"
+    ).count()
+
+    job = complete_stage(db_session, router_task, ROUTER_OUTPUT)
+
+    writer_mid = db_session.query(JobStage).filter(
+        JobStage.job_id == job.id, JobStage.agent_type == "writer"
+    ).count()
+    assert writer_mid == writer_before + 1
+
+    # Crash-window redelivery: the same (already advanced) router task comes
+    # back. advance_job must short-circuit instead of dispatching writer again.
+    job = advance_job(db_session, router_task)
+
+    writer_after = db_session.query(JobStage).filter(
+        JobStage.job_id == job.id, JobStage.agent_type == "writer"
+    ).count()
+    assert writer_after == writer_mid == writer_before + 1
+    assert job.status in ("running", "awaiting_approval")

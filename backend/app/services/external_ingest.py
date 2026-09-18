@@ -296,28 +296,117 @@ def _open_zip(data: bytes) -> zipfile.ZipFile | None:
         return None
 
 
+# Decompression budgets (Fix 6): an uploaded archive is untrusted input — a
+# crafted "zip bomb" can declare enormous uncompressed sizes or nest zip-in-zip
+# chains forever, turning a small upload into a memory/CPU DoS. These four caps
+# bound what a single import may expand to; breaches raise ZipBudgetError (a
+# ValueError), which the per-file callers already turn into skippable errors.
+MAX_ZIP_ENTRIES = 2000
+MAX_ZIP_EXPANDED_BYTES = 512 * 1024 * 1024  # 512 MB total uncompressed
+MAX_ZIP_ENTRY_BYTES = 100 * 1024 * 1024     # 100 MB per entry uncompressed
+MAX_ZIP_DEPTH = 5
+
+
+class ZipBudgetError(ValueError):
+    """An archive exceeded a decompression-safety budget (zip-bomb guard)."""
+
+
+class _ZipBudget:
+    """Tracks decompression budget while a zip walk descends.
+
+    ``check_entry`` pre-flights an entry's declared uncompressed size
+    (``ZipInfo.file_size`` from the central directory) before its payload is
+    read into memory; ``spend_entry`` records the *actual* bytes read and
+    enforces the per-entry, entry-count, and total-byte caps on real numbers —
+    so archives that omit sizes in the central directory are still bounded.
+    """
+
+    def __init__(
+        self,
+        max_entries: int,
+        max_expanded_bytes: int,
+        max_entry_bytes: int,
+        max_depth: int,
+    ):
+        self.max_entries = max_entries
+        self.max_expanded_bytes = max_expanded_bytes
+        self.max_entry_bytes = max_entry_bytes
+        self.max_depth = max_depth
+        self._entry_count = 0
+        self._expanded_bytes = 0
+
+    def check_entry(self, declared_size: int) -> None:
+        if declared_size > self.max_entry_bytes:
+            raise ZipBudgetError(
+                f"Entry declares {declared_size} bytes uncompressed, over the "
+                f"{self.max_entry_bytes} byte single-entry cap"
+            )
+
+    def spend_entry(self, n_bytes: int) -> None:
+        if n_bytes > self.max_entry_bytes:
+            raise ZipBudgetError(
+                f"Entry expands to {n_bytes} bytes, over the "
+                f"{self.max_entry_bytes} byte single-entry cap"
+            )
+        self._entry_count += 1
+        if self._entry_count > self.max_entries:
+            raise ZipBudgetError(f"Archive has more than {self.max_entries} entries")
+        self._expanded_bytes += n_bytes
+        if self._expanded_bytes > self.max_expanded_bytes:
+            raise ZipBudgetError(
+                f"Archive expands past {self._expanded_bytes} bytes, over the "
+                f"{self.max_expanded_bytes} byte total cap"
+            )
+
+
 def _read_zip(path: Path) -> dict[str, bytes]:
+    """Unpack a folder-of-exports zip/bundle into a {name: bytes} map.
+
+    Decompression budget (Fix 6): a malicious or corrupt archive is a classic
+    "zip bomb" vector — crafted so a tiny outer file inflates a huge byte
+    count (e.g. repeating a highly-compressible pattern is invalid, so the
+    *entry count* is what blows up, and deeply nested zip-in-zip chains recurse
+    forever). Without limits that turns a few-kilobyte upload into a memory/
+    CPU DoS. We bound four things as the walk descends, and any breach raises
+    a ``ValueError`` that the per-file caller already turns into a skippable
+    import error — one bad file never fails the whole folder:
+    """
+    budget = _ZipBudget(
+        max_entries=MAX_ZIP_ENTRIES,
+        max_expanded_bytes=MAX_ZIP_EXPANDED_BYTES,
+        max_entry_bytes=MAX_ZIP_ENTRY_BYTES,
+        max_depth=MAX_ZIP_DEPTH,
+    )
+
     with open(path, "rb") as fh:
         raw = fh.read()
+
     out: dict[str, bytes] = {}
 
-    def walk(data: bytes, top: bool = False):
+    def walk(data: bytes, depth: int = 0):
+        if depth > budget.max_depth:
+            raise ZipBudgetError(
+                f"Archive nests deeper than {budget.max_depth} levels (Fix 6)"
+            )
         zf = _open_zip(data)
         if zf is None:
-            if top:
+            if depth == 0:
                 out["_nonzip"] = data
             return
         with zf:
             for n in zf.namelist():
                 if n.endswith("/"):
                     continue
+                info = zf.getinfo(n)
+                budget.check_entry(info.file_size)
                 payload = zf.read(n)
+                budget.spend_entry(len(payload))
                 if _open_zip(payload) is None:
                     out.setdefault(n, payload)
                 else:
-                    walk(payload)
+                    walk(payload, depth + 1)
 
-    walk(raw, top=True)
+    walk(raw)
     return out
 
 

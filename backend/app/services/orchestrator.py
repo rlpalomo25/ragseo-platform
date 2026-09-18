@@ -55,6 +55,23 @@ def _dispatch_stage(db: DBSession, job: AgentJob, agent_type: str,
     ).order_by(JobStage.sequence.desc()).first()
     sequence = (last_seq[0] + 1) if last_seq else 1
 
+    # Guard (Fix 5B): every dispatch path funnels through here, so the
+    # crash-window redelivery re-entry is handled in one place. If a prior
+    # (committed) run on the SAME job already dispatched this exact next stage
+    # and its AgentTask, reuse that dispatch instead of creating a duplicate —
+    # which would otherwise (a) double-queue an LLM agent run and (b) violate
+    # uq_job_stages_job_sequence once the worker that died was redelivered.
+    existing = db.query(JobStage).filter(
+        JobStage.job_id == job.id,
+        JobStage.sequence == sequence,
+    ).first()
+    if existing is not None and existing.task_id is not None:
+        logger.info(
+            "_dispatch_stage: seq=%s already dispatched for job %s (redelivery) — reusing",
+            sequence, job.id,
+        )
+        return existing
+
     stage = JobStage(
         job_id=job.id,
         sequence=sequence,
@@ -95,6 +112,17 @@ def advance_job(db: DBSession, task: AgentTask) -> AgentJob | None:
     job = db.query(AgentJob).filter(AgentJob.id == stage.job_id).first()
     if not job:
         return None
+
+    # Guard 1 (Fix 5B): the pipeline runs tasks with acks_late +
+    # reject_on_worker_lost, so a worker that dies right after committing a
+    # stage completion gets that agent task redelivered and `advance_job`
+    # re-entered IN THE SAME job with an already-advanced stage. Treat it as a
+    # no-op — otherwise we'd re-dispatch the next stage (double LLM spend) and
+    # double-increment revision_count. Guards 2 + 3 (same reason) live in
+    # _dispatch_stage and the DB unique constraint.
+    if stage.status == "completed":
+        logger.info("advance_job: stage %s already completed (redelivery) — no-op", stage.sequence)
+        return job
 
     if job.status == "cancelled":
         stage.status = "skipped"

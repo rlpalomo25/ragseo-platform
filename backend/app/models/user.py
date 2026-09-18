@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Uuid
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Uuid, Integer
 from app.database import Base
 
 
@@ -15,6 +15,10 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     last_login = Column(DateTime(timezone=True), nullable=True)
     is_active = Column(Boolean, default=True)
+    # Login throttling fields
+    failed_login_attempts = Column(Integer, default=0, nullable=False)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+    last_failed_login = Column(DateTime(timezone=True), nullable=True)
 
 
 class Session(Base):

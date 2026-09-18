@@ -75,12 +75,17 @@ def load_governing_docs(
 
 
 def detect_brand(text: str) -> str:
-    """Detect brand from free text. Returns normalized brand key."""
+    """Detect brand from free text. Returns normalized brand key.
+
+    Keys match the money-site domain keys used by the external-data layer
+    (``BRAND_DOMAINS`` in external_ingest.py): mastershield / kleangutter / mmgg.
+    """
     lower = text.lower()
     if "mastershield" in lower or "master shield" in lower:
         return "mastershield"
-    if "klean gutter" in lower or "kleangutter" in lower or "klean-gutter" in lower:
-        return "klean_gutter"
+    if ("klean gutter" in lower or "kleangutter" in lower
+            or "klean-gutter" in lower or "klean_gutter" in lower):
+        return "kleangutter"
     if "mmgg" in lower or "michael & son" in lower:
         return "mmgg"
     return "generic"
@@ -88,7 +93,7 @@ def detect_brand(text: str) -> str:
 
 BRAND_CONFIG = {
     "mastershield": {"writer_doc": "316", "brand_module": "130"},
-    "klean_gutter": {"writer_doc": "320", "brand_module": "131"},
+    "kleangutter": {"writer_doc": "320", "brand_module": "131"},
     "mmgg": {"writer_doc": "324", "brand_module": "132"},
 }
 

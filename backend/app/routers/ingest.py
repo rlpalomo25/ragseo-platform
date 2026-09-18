@@ -395,6 +395,14 @@ def delete_external(
     baked_dir = Path(settings.external_data_path)
     resp = ExternalDeleteResultResponse(message="Delete selected exports", files=[])
 
+    # Baked (read-only image-layer) exports are never deletable from the website.
+    # Policy for uploads: the weekly exports folder is a shared team resource, so
+    # any writer/admin may delete any uploaded file — but baked rows/files must
+    # never be touched, even when a delete targets a renamed/hash-colliding upload.
+    baked_file_names: set[str] = set()
+    if baked_dir.is_dir():
+        baked_file_names = {p.name for p in baked_dir.iterdir() if p.is_file()}
+
     for raw in payload.filenames:
         name = _safe_filename(raw)
         if not name:
@@ -403,7 +411,15 @@ def delete_external(
             continue
 
         upload_path = upload_dir / name
-        is_baked = baked_dir.is_dir() and (baked_dir / name).is_file()
+
+        # A name colliding with a baked file is refused outright — never unlink
+        # a same-named upload copy nor delete any rows for it.
+        if name in baked_file_names:
+            resp.baked += 1
+            resp.files.append(ExternalDeleteItem(
+                filename=name, status="baked",
+                message="Part of the base baked dataset and cannot be deleted from the website."))
+            continue
 
         hashes: list[str] = []
         if upload_path.is_file():
@@ -418,16 +434,17 @@ def delete_external(
                 for row in db.query(ExternalExport).filter(ExternalExport.file_hash == h).all():
                     exports[row.id] = row
 
+        # Never delete rows that belong to baked files (e.g. an upload whose bytes
+        # duplicate a baked export — the importer hash-dedupes, so only the baked
+        # row exists under that hash). The upload copy (if any) is still removed.
+        if baked_file_names:
+            exports = {rid: row for rid, row in exports.items()
+                       if row.file_name not in baked_file_names}
+
         if not exports and not hashes:
             db.commit()
-            if is_baked:
-                resp.baked += 1
-                resp.files.append(ExternalDeleteItem(
-                    filename=name, status="baked",
-                    message="Part of the base baked dataset and cannot be deleted from the website."))
-            else:
-                resp.not_found += 1
-                resp.files.append(ExternalDeleteItem(filename=name, status="not_found"))
+            resp.not_found += 1
+            resp.files.append(ExternalDeleteItem(filename=name, status="not_found"))
             continue
 
         for row in exports.values():

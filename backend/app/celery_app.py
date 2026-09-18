@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 from app.config import get_settings
 
 settings = get_settings()
@@ -29,4 +30,10 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     broker_connection_max_retries=10,
     result_expires=60 * 60,
+    beat_schedule={
+        "doctrine-reconcile-hourly": {
+            "task": "app.tasks.reconcile_doctrine",
+            "schedule": crontab(minute=0),  # hourly at :00
+        },
+    },
 )

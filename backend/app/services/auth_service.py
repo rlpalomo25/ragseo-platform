@@ -38,10 +38,28 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+SESSION_MAX_PER_USER = 5
+
+
 def create_session(db: DBSession, user_id: UUID) -> tuple[Session, str]:
     """Create a session row (raw token stored) and return it with the signed
     client-facing token. The ORM object keeps the raw token so later commits
-    never persist the signed form."""
+    never persist the signed form.
+
+    Enforces a max concurrent sessions limit per user (SESSION_MAX_PER_USER).
+    If the user already has the max number of active sessions, the oldest one
+    is revoked before creating the new one."""
+    # Revoke oldest existing session if at max capacity
+    existing = db.query(Session).filter(
+        Session.user_id == user_id,
+        Session.expires_at > datetime.now(timezone.utc),
+    ).order_by(Session.created_at.asc()).all()
+
+    if len(existing) >= SESSION_MAX_PER_USER:
+        for old in existing[: len(existing) - SESSION_MAX_PER_USER + 1]:
+            db.query(Session).filter(Session.id == old.id).delete()
+        db.commit()
+
     token = secrets.token_hex(32)
     expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.session_expiry_hours)
     session = Session(user_id=user_id, token=token, expires_at=expires_at)
@@ -73,6 +91,13 @@ def delete_session(db: DBSession, signed_token: str) -> bool:
     deleted = db.query(Session).filter(Session.token == raw_token).delete()
     db.commit()
     return deleted > 0
+
+
+def prune_expired_sessions(db: DBSession) -> int:
+    """Delete all expired sessions and return the count of deleted rows."""
+    result = db.query(Session).filter(Session.expires_at < datetime.now(timezone.utc)).delete()
+    db.commit()
+    return result
 
 
 def create_default_admin(db: DBSession) -> User | None:

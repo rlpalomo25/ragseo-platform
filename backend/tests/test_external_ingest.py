@@ -1,6 +1,7 @@
 import io
 import zipfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -15,35 +16,43 @@ from app.services.external_data import build_market_context
 
 
 def make_gsc_zip(domain="kleangutter"):
-    buf = io.BytesIO()
+    FIXED = (2026, 8, 28, 0, 0, 0)
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, "w") as z:
-        z.writestr("Chart.csv", "Date,Clicks,Impressions,CTR,Position\n"
-                                "2026-08-28,10,100,10,5.2\n2026-08-29,20,120,16.67,4.5\n")
-        z.writestr("Queries.csv", "Top queries,Clicks,Impressions,CTR,Position\n"
-                                  "gutter guard cost,22,300,7.33,3.1\n"
-                                  "klean gutter,8,90,8.89,1.0\n")
-        z.writestr("Pages.csv", "Top pages,Clicks,Impressions,CTR,Position\n"
-                                "https://kleangutter.com/,12,180,6.67,4.0\n")
-        z.writestr("Countries.csv", "Country,Clicks,Impressions,CTR,Position\n"
-                                    "United States,25,380,6.58,3.5\n")
-        z.writestr("Devices.csv", "Device,Clicks,Impressions,CTR,Position\n"
-                                  "Mobile,18,240,7.5,3.8\n")
-        z.writestr("Filters.csv", "Filter,Value\nSearch type,Web\nDate,\"Aug 28, 2026-Sep 3, 2026\"\n")
+        for name, body in [
+            ("Chart.csv", "Date,Clicks,Impressions,CTR,Position\n"
+                          "2026-08-28,10,100,10,5.2\n2026-08-29,20,120,16.67,4.5\n"),
+            ("Queries.csv", "Top queries,Clicks,Impressions,CTR,Position\n"
+                            "gutter guard cost,22,300,7.33,3.1\n"
+                            "klean gutter,8,90,8.89,1.0\n"),
+            ("Pages.csv", "Top pages,Clicks,Impressions,CTR,Position\n"
+                          "https://kleangutter.com/,12,180,6.67,4.0\n"),
+            ("Countries.csv", "Country,Clicks,Impressions,CTR,Position\n"
+                              "United States,25,380,6.58,3.5\n"),
+            ("Devices.csv", "Device,Clicks,Impressions,CTR,Position\n"
+                            "Mobile,18,240,7.5,3.8\n"),
+            ("Filters.csv", "Filter,Value\nSearch type,Web\nDate,\"Aug 28, 2026-Sep 3, 2026\"\n"),
+        ]:
+            z.writestr(zipfile.ZipInfo(name, date_time=FIXED), body)
     outer = io.BytesIO()
     with zipfile.ZipFile(outer, "w") as z:
-        z.writestr(f"{domain}_GSC_Export_[09112026].csv", inner.getvalue())
+        z.writestr(zipfile.ZipInfo(f"{domain}_GSC_Export_[09112026].csv", date_time=FIXED),
+                   inner.getvalue())
     return outer.getvalue()
 
 
 def make_ai_zip():
+    FIXED = (2026, 9, 3, 0, 0, 0)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("Chart.csv", "Date,Impressions\n2026-08-28,22\n2026-08-29,23\n")
-        z.writestr("Pages.csv", "Top pages,Impressions\nhttps://kleangutter.com/,41\n")
-        z.writestr("Countries.csv", "Country,Impressions\nUnited States,40\n")
-        z.writestr("Devices.csv", "Device,Impressions\nDesktop,30\n")
-        z.writestr("Filters.csv", "Filter,Value\nDate,\"Aug 28, 2026-Sep 3, 2026\"\n")
+        for name, body in [
+            ("Chart.csv", "Date,Impressions\n2026-08-28,22\n2026-08-29,23\n"),
+            ("Pages.csv", "Top pages,Impressions\nhttps://kleangutter.com/,41\n"),
+            ("Countries.csv", "Country,Impressions\nUnited States,40\n"),
+            ("Devices.csv", "Device,Impressions\nDesktop,30\n"),
+            ("Filters.csv", "Filter,Value\nDate,\"Aug 28, 2026-Sep 3, 2026\"\n"),
+        ]:
+            z.writestr(zipfile.ZipInfo(name, date_time=FIXED), body)
     return buf.getvalue()
 
 
@@ -466,6 +475,70 @@ def test_delete_reports_baked_file(client, admin_user, external_dir, tmp_path, m
     assert (external_dir / "KleanGutter_GSC_Export_[09112026].csv.zip.zip").exists()
 
 
+def test_delete_hard_rejects_baked_name_even_with_upload_copy(
+        client, admin_user, external_dir, tmp_path, monkeypatch, db_session):
+    from app.config import get_settings
+    from app.models import external as m
+
+    monkeypatch.setattr(get_settings(), "external_data_path", str(external_dir))
+    upload_dir = _upload_path(tmp_path)
+    monkeypatch.setattr(get_settings(), "external_upload_path", upload_dir)
+    login_admin(client)
+
+    imported = client.post("/api/ingest/external").json()
+    assert imported["imported"] == 10
+    rows_before = db_session.query(m.ExternalExport).count()
+
+    # same-named copy lands in the writable upload folder too (import = hash-dup -> skipped)
+    r = _upload_files(client, [
+        ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
+    ], upload_dir)
+    assert r.json()["skipped"] == 1, r.json()
+    assert (tmp_path / "uploads" / "KleanGutter_GSC_Export_[09112026].csv.zip.zip").is_file()
+
+    r = _delete_files(client, ["KleanGutter_GSC_Export_[09112026].csv.zip.zip"])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["baked"] == 1
+    assert body["deleted"] == 0
+    assert body["files"][0]["status"] == "baked"
+    # the same-named upload copy is NOT unlinked, and no DB rows were touched
+    assert (tmp_path / "uploads" / "KleanGutter_GSC_Export_[09112026].csv.zip.zip").is_file()
+    assert db_session.query(m.ExternalExport).count() == rows_before
+
+
+def test_delete_renamed_upload_never_touches_baked_rows(
+        client, admin_user, external_dir, tmp_path, monkeypatch, db_session):
+    from app.config import get_settings
+    from app.models import external as m
+
+    monkeypatch.setattr(get_settings(), "external_data_path", str(external_dir))
+    upload_dir = Path(_upload_path(tmp_path))
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(get_settings(), "external_upload_path", str(upload_dir))
+    login_admin(client)
+
+    imported = client.post("/api/ingest/external").json()
+    assert imported["imported"] == 10
+    baked_rows = db_session.query(m.ExternalExport).count()
+    baked_daily = db_session.query(m.SearchConsoleDaily).count()
+
+    # an upload whose bytes duplicate a baked export but under a different name
+    # (the importer would hash-dedup it, so no DB row ever belongs to this file)
+    dupe = upload_dir / "weekly_dupe_export.zip"
+    dupe.write_bytes(make_gsc_zip())
+
+    r = _delete_files(client, ["weekly_dupe_export.zip"])
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["deleted"] == 1
+    assert body["baked"] == 0
+    # upload copy is gone, but the baked rows it duplicated are untouched
+    assert not dupe.exists()
+    assert db_session.query(m.ExternalExport).count() == baked_rows
+    assert db_session.query(m.SearchConsoleDaily).count() == baked_daily
+
+
 def test_delete_reports_not_found(client, test_user, tmp_path, monkeypatch):
     from app.config import get_settings
 
@@ -516,3 +589,106 @@ def test_status_ignores_hidden_placeholder_files(client, admin_user, tmp_path, m
     body = status.json()
     assert body["totals"]["files"] == 0
     assert body["files"] == []
+
+
+# ---------------------------------------------------------------- Fix 6: decompression budgets
+
+def test_zip_budget_rejects_oversized_entry():
+    from app.services import external_ingest as m
+
+    budget = m._ZipBudget(max_entries=100, max_expanded_bytes=10_000, max_entry_bytes=50, max_depth=5)
+    budget.check_entry(40)
+    budget.spend_entry(40)
+    with pytest.raises(m.ZipBudgetError):
+        budget.check_entry(60)  # declared uncompressed size too big
+    with pytest.raises(m.ZipBudgetError):
+        budget.spend_entry(60)  # actual expanded bytes too big
+
+
+def test_zip_budget_rejects_too_many_entries():
+    from app.services import external_ingest as m
+
+    budget = m._ZipBudget(max_entries=3, max_expanded_bytes=10_000, max_entry_bytes=100, max_depth=5)
+    for _ in range(3):
+        budget.spend_entry(1)
+    with pytest.raises(m.ZipBudgetError):
+        budget.spend_entry(1)
+
+
+def test_zip_budget_rejects_total_expansion():
+    from app.services import external_ingest as m
+
+    budget = m._ZipBudget(max_entries=100, max_expanded_bytes=10, max_entry_bytes=100, max_depth=5)
+    budget.spend_entry(6)
+    budget.spend_entry(4)
+    with pytest.raises(m.ZipBudgetError):
+        budget.spend_entry(1)
+
+
+_FIXED_ZIP_DATE = (2026, 9, 3, 0, 0, 0)
+
+
+def _write_zip(path: Path, entries: list[tuple[str, bytes]]) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, body in entries:
+            z.writestr(zipfile.ZipInfo(name, date_time=_FIXED_ZIP_DATE), body)
+    path.write_bytes(buf.getvalue())
+
+
+def test_read_zip_expands_normal_nested_archive(tmp_path):
+    from app.services.external_ingest import _read_zip
+
+    inner = io.BytesIO()
+    with zipfile.ZipFile(inner, "w") as z:
+        z.writestr(zipfile.ZipInfo("Chart.csv", date_time=_FIXED_ZIP_DATE),
+                   "Date,Clicks\n2026-08-28,10\n")
+    _write_zip(tmp_path / "bundle.zip", [
+        ("kleangutter_GSC_Export.csv", inner.getvalue()),
+        ("leads.txt", b"week\n"),
+    ])
+
+    out = _read_zip(tmp_path / "bundle.zip")
+    assert "leads.txt" in out
+    assert "Chart.csv" in out  # unwrapped from the nested inner zip
+    assert set(out.keys()) == {"leads.txt", "Chart.csv"}
+
+
+def test_read_zip_rejects_oversized_entry(tmp_path, monkeypatch):
+    from app.services import external_ingest as m
+
+    monkeypatch.setattr(m, "MAX_ZIP_ENTRY_BYTES", 10)
+    _write_zip(tmp_path / "big.zip", [("big.csv", b"x" * 100)])
+    with pytest.raises(m.ZipBudgetError):
+        m._read_zip(tmp_path / "big.zip")
+
+
+def test_read_zip_rejects_too_many_entries(tmp_path, monkeypatch):
+    from app.services import external_ingest as m
+
+    monkeypatch.setattr(m, "MAX_ZIP_ENTRIES", 2)
+    _write_zip(tmp_path / "many.zip", [("f0.txt", b"x"), ("f1.txt", b"x"), ("f2.txt", b"x")])
+    with pytest.raises(m.ZipBudgetError):
+        m._read_zip(tmp_path / "many.zip")
+
+
+def test_read_zip_rejects_deep_nesting(tmp_path, monkeypatch):
+    from app.services import external_ingest as m
+
+    monkeypatch.setattr(m, "MAX_ZIP_DEPTH", 1)
+    payload = b"leaf"
+    for _ in range(3):  # zip( zip( zip(leaf) ) ) — depth 2 on a 1-level cap
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr(zipfile.ZipInfo("inner.zip", date_time=_FIXED_ZIP_DATE), payload)
+        payload = buf.getvalue()
+    _write_zip(tmp_path / "deep.zip", [("outer.zip", payload)])
+    with pytest.raises(m.ZipBudgetError):
+        m._read_zip(tmp_path / "deep.zip")
+
+
+def test_zip_budget_error_is_value_error():
+    """Per-file import isolation catches ValueError, so one bad zip never blocks the folder."""
+    from app.services.external_ingest import ZipBudgetError
+
+    assert issubclass(ZipBudgetError, ValueError)

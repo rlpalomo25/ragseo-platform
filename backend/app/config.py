@@ -8,6 +8,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     llm_model: str = "claude-sonnet-4-5"
     llm_max_tokens: int = 8000
+    # LLM call resilience (Fix 5): the client timeout must stay below the
+    # celery soft limit (600s) so a single request timeout fits inside one
+    # task slot, and the retry budget stays bounded so a flaky provider cannot
+    # silently eat the whole hard limit (900s).
+    llm_timeout_seconds: int = 540
+    llm_max_retries: int = 2
+    llm_retry_backoff_base: float = 2.0  # backoff = base * 2**attempt
     secret_key: str = "change-this-to-a-random-string"
     session_expiry_hours: int = 24
     default_admin_username: str = "admin"
