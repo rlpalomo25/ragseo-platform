@@ -4,8 +4,9 @@ Revision ID: 0002_jobs
 Revises: 0001_baseline
 Create Date: 2026-08-20
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import Uuid
 
 revision = "0002_jobs"
@@ -34,8 +35,13 @@ def upgrade() -> None:
     op.create_table(
         "job_stages",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("job_id", Uuid(as_uuid=True), sa.ForeignKey("agent_jobs.id", ondelete="CASCADE"),
-                  nullable=False, index=True),
+        sa.Column(
+            "job_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("agent_jobs.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
         sa.Column("sequence", sa.Integer(), nullable=False),
         sa.Column("agent_type", sa.String(50), nullable=False),
         sa.Column("task_id", Uuid(as_uuid=True), sa.ForeignKey("agent_tasks.id"), nullable=True),

@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session as DBSession
+
 from app.database import get_db
-from app.schemas.user import CreateUser, UpdateUser, UserResponse, UserList
-from app.models.user import User
-from app.services.auth_service import hash_password
 from app.dependencies import require_admin
+from app.models.user import User
+from app.schemas.user import CreateUser, UpdateUser, UserList, UserResponse
+from app.services.auth_service import hash_password
 
 router = APIRouter()
 
@@ -13,14 +14,17 @@ router = APIRouter()
 def list_users(admin: User = Depends(require_admin), db: DBSession = Depends(get_db)):
     users = db.query(User).order_by(User.created_at.desc()).all()
     return UserList(
-        users=[UserResponse(
-            id=str(u.id),
-            username=u.username,
-            role=u.role,
-            is_active=u.is_active,
-            created_at=u.created_at.isoformat() if u.created_at else "",
-            last_login=u.last_login.isoformat() if u.last_login else None,
-        ) for u in users],
+        users=[
+            UserResponse(
+                id=str(u.id),
+                username=u.username,
+                role=u.role,
+                is_active=u.is_active,
+                created_at=u.created_at.isoformat() if u.created_at else "",
+                last_login=u.last_login.isoformat() if u.last_login else None,
+            )
+            for u in users
+        ],
         total=len(users),
     )
 
@@ -50,7 +54,9 @@ def create_user(body: CreateUser, admin: User = Depends(require_admin), db: DBSe
 
 
 @router.put("/{user_id}", response_model=UserResponse)
-def update_user(user_id: str, body: UpdateUser, admin: User = Depends(require_admin), db: DBSession = Depends(get_db)):
+def update_user(
+    user_id: str, body: UpdateUser, admin: User = Depends(require_admin), db: DBSession = Depends(get_db)
+):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")

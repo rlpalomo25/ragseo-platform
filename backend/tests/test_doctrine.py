@@ -5,10 +5,11 @@ understands (``BRAND_DOMAINS`` keys) so Klean Gutter jobs actually get market
 context — previously ``detect_brand`` returned ``"klean_gutter"`` which no
 ``DOMAIN_FOR_BRAND`` entry mapped, silently skipping all market data.
 """
-from datetime import datetime, timezone
 
-from app.services.doctrine import BRAND_CONFIG, detect_brand
+from datetime import UTC, datetime
+
 from app.models import external as m
+from app.services.doctrine import BRAND_CONFIG, detect_brand
 
 
 def test_detect_brand_normalizes_klean_spellings():
@@ -25,6 +26,7 @@ def test_brand_config_uses_market_data_keys():
     # every brand key used for doctrine routing must resolve a market-domain key
     assert "kleangutter" in BRAND_CONFIG
     from app.services.external_data import DOMAIN_FOR_BRAND
+
     for brand in BRAND_CONFIG:
         assert brand in DOMAIN_FOR_BRAND
 
@@ -35,15 +37,24 @@ def test_klean_market_context_flows_from_detected_brand(db_session):
         domain="kleangutter.com",
         file_name="KleanGutter_GSC.csv",
         file_hash="klean-gsc-1",
-        imported_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        imported_at=datetime(2026, 9, 8, tzinfo=UTC),
         row_count=1,
     )
     db_session.add(exp)
     db_session.commit()
     db_session.refresh(exp)
-    db_session.add(m.SearchConsoleDim(
-        export_id=exp.id, domain="kleangutter.com", dim_type="query",
-        key="klean gutter near me", clicks=4, impressions=55, ctr=7.2, position=3.0))
+    db_session.add(
+        m.SearchConsoleDim(
+            export_id=exp.id,
+            domain="kleangutter.com",
+            dim_type="query",
+            key="klean gutter near me",
+            clicks=4,
+            impressions=55,
+            ctr=7.2,
+            position=3.0,
+        )
+    )
     db_session.commit()
 
     from app.services.external_data import build_market_context

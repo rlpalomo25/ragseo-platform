@@ -6,6 +6,8 @@
 # Node
 frontend/node_modules/
 frontend/.next/
+frontend/tsconfig.tsbuildinfo
+frontend/.eslintcache
 
 # Python
 __pycache__/

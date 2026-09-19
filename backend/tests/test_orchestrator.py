@@ -1,14 +1,13 @@
-import json
-import pytest
+from datetime import UTC
 
+import pytest
 from app.models.agent_task import AgentTask
 from app.models.job import AgentJob, JobStage
-from app.services import orchestrator
 from app.services.orchestrator import (
-    create_job,
     advance_job,
     approve_job,
     cancel_job,
+    create_job,
 )
 
 
@@ -23,8 +22,9 @@ def no_celery(monkeypatch):
     return recorded
 
 
-def complete_stage(db, task: AgentTask, output: dict | None = None,
-                   status: str = "completed", error: str | None = None):
+def complete_stage(
+    db, task: AgentTask, output: dict | None = None, status: str = "completed", error: str | None = None
+):
     task.status = status
     task.output_data = output
     task.error_message = error
@@ -55,16 +55,23 @@ ROUTER_OUTPUT = {
 WRITER_OUTPUT = {
     "agent": "writer",
     "provenance": [],
-    "output": {"title": "T", "meta_title": "MT", "meta_description": "MD",
-               "content_markdown": "# T\n\nDraft."},
+    "output": {
+        "title": "T",
+        "meta_title": "MT",
+        "meta_description": "MD",
+        "content_markdown": "# T\n\nDraft.",
+    },
 }
 
-AUDIT_FINDINGS = [{"check": "FAQ count", "severity": "major",
-                   "status": "fail", "notes": "Only 2 questions above fold."}]
+AUDIT_FINDINGS = [
+    {"check": "FAQ count", "severity": "major", "status": "fail", "notes": "Only 2 questions above fold."}
+]
 
 
 def test_create_job_dispatches_router_stage(db_session, test_user, no_celery):
-    job = create_job(db_session, created_by=test_user.id, request="Write a comparison page about gutter guards")
+    job = create_job(
+        db_session, created_by=test_user.id, request="Write a comparison page about gutter guards"
+    )
     assert job.status == "running"
     assert job.revision_count == 0
 
@@ -109,9 +116,13 @@ def test_audit_pass_goes_to_awaiting_approval(db_session, test_user):
     complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job)), ROUTER_OUTPUT)
     complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "writer")), WRITER_OUTPUT)
 
-    verdict_output = {"agent": "auditor", "output": {"verdict": "pass_with_notes",
-                                                     "summary": "ok", "findings": []}}
-    job = complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "auditor")), verdict_output)
+    verdict_output = {
+        "agent": "auditor",
+        "output": {"verdict": "pass_with_notes", "summary": "ok", "findings": []},
+    }
+    job = complete_stage(
+        db_session, stage_task(db_session, latest_stage(db_session, job, "auditor")), verdict_output
+    )
 
     assert job.status == "awaiting_approval"
 
@@ -120,10 +131,14 @@ def test_audit_fail_routes_back_to_writer_with_feedback(db_session, test_user):
     job = create_job(db_session, created_by=test_user.id, request="Write a comparison page")
     complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job)), ROUTER_OUTPUT)
     complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "writer")), WRITER_OUTPUT)
-    fail_output = {"agent": "auditor", "output": {"verdict": "fail",
-                                                  "summary": "issues", "findings": AUDIT_FINDINGS}}
+    fail_output = {
+        "agent": "auditor",
+        "output": {"verdict": "fail", "summary": "issues", "findings": AUDIT_FINDINGS},
+    }
 
-    job = complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "auditor")), fail_output)
+    job = complete_stage(
+        db_session, stage_task(db_session, latest_stage(db_session, job, "auditor")), fail_output
+    )
 
     assert job.status == "running"
     assert job.revision_count == 1
@@ -136,13 +151,19 @@ def test_audit_fail_routes_back_to_writer_with_feedback(db_session, test_user):
 
 def test_audit_fail_exhausts_revisions_then_fails(db_session, test_user):
     job = create_job(db_session, created_by=test_user.id, request="Write a comparison page")
-    fail_output = {"agent": "auditor", "output": {"verdict": "fail",
-                                                  "summary": "still bad", "findings": AUDIT_FINDINGS}}
+    fail_output = {
+        "agent": "auditor",
+        "output": {"verdict": "fail", "summary": "still bad", "findings": AUDIT_FINDINGS},
+    }
 
     complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job)), ROUTER_OUTPUT)
     for _ in range(job.max_revisions + 1):  # initial write + all revisions
-        complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "writer")), WRITER_OUTPUT)
-        job = complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "auditor")), fail_output)
+        complete_stage(
+            db_session, stage_task(db_session, latest_stage(db_session, job, "writer")), WRITER_OUTPUT
+        )
+        job = complete_stage(
+            db_session, stage_task(db_session, latest_stage(db_session, job, "auditor")), fail_output
+        )
         if job.status != "running":
             break
 
@@ -184,8 +205,13 @@ def test_cancel_stops_advancement(db_session, test_user):
 
 
 def test_advance_ignores_standalone_tasks(db_session, test_user):
-    task = AgentTask(agent_type="router", status="completed",
-                     input_data={}, output_data=ROUTER_OUTPUT, created_by=test_user.id)
+    task = AgentTask(
+        agent_type="router",
+        status="completed",
+        input_data={},
+        output_data=ROUTER_OUTPUT,
+        created_by=test_user.id,
+    )
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
@@ -204,23 +230,115 @@ def test_advance_job_redelivery_does_not_duplicate_next_stage(db_session, test_u
     """
     job = create_job(db_session, created_by=test_user.id, request="Write a page")
     router_task = stage_task(db_session, latest_stage(db_session, job))
-    writer_before = db_session.query(JobStage).filter(
-        JobStage.job_id == job.id, JobStage.agent_type == "writer"
-    ).count()
+    writer_before = (
+        db_session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.agent_type == "writer").count()
+    )
 
     job = complete_stage(db_session, router_task, ROUTER_OUTPUT)
 
-    writer_mid = db_session.query(JobStage).filter(
-        JobStage.job_id == job.id, JobStage.agent_type == "writer"
-    ).count()
+    writer_mid = (
+        db_session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.agent_type == "writer").count()
+    )
     assert writer_mid == writer_before + 1
 
     # Crash-window redelivery: the same (already advanced) router task comes
     # back. advance_job must short-circuit instead of dispatching writer again.
     job = advance_job(db_session, router_task)
 
-    writer_after = db_session.query(JobStage).filter(
-        JobStage.job_id == job.id, JobStage.agent_type == "writer"
-    ).count()
+    writer_after = (
+        db_session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.agent_type == "writer").count()
+    )
     assert writer_after == writer_mid == writer_before + 1
     assert job.status in ("running", "awaiting_approval")
+
+
+def test_advance_job_resumes_completed_but_unadvanced_stage(db_session, test_user):
+    """Fix 5B window (b): worker died after run_agent committed "completed".
+
+    The next stage never got dispatched -> job would stall forever in
+    "running". advance_job must RESUME (dispatch writer), not no-op.
+    """
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    router_task = stage_task(db_session, latest_stage(db_session, job))
+    assert job.status == "running"
+
+    # Simulate the crash window: run_agent committed a completed result, but
+    # advance_job never ran/committed the writer dispatch.
+    router_task.status = "completed"
+    router_task.output_data = ROUTER_OUTPUT
+    db_session.commit()
+
+    job = advance_job(db_session, router_task)
+
+    assert latest_stage(db_session, job, "writer") is not None
+    assert job.status == "running"
+
+
+def test_advance_resumes_auditor_terminal_redelivery(db_session, test_user):
+    """Window (b) end of pipeline: completed auditor, no next stage.
+
+    run_agent committed the PASS verdict but _handle_audit_result (the commit
+    that moves the job to awaiting_approval) never landed. Redelivery must run
+    the audit advancement, not no-op.
+    """
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job)), ROUTER_OUTPUT)
+    complete_stage(db_session, stage_task(db_session, latest_stage(db_session, job, "writer")), WRITER_OUTPUT)
+    audit_task = stage_task(db_session, latest_stage(db_session, job, "auditor"))
+    assert job.status == "running"
+
+    verdict_output = {"agent": "auditor", "output": {"verdict": "pass", "summary": "ok", "findings": []}}
+    audit_task.status = "completed"
+    audit_task.output_data = verdict_output
+    db_session.commit()
+
+    job = advance_job(db_session, audit_task)
+
+    assert job.status == "awaiting_approval"
+
+
+def test_sweep_stale_tasks_fails_zombie_and_job(db_session, test_user):
+    """Fix 5: a task stuck in `running` past the threshold is reclaimed.
+
+    mark_stale_running_task_marked_failed -> advance_job routes the stage and
+    job to failed (matching the "stage errored" path).
+    """
+    from datetime import timedelta
+
+    from app.services.orchestrator import STALE_RUNNING_AFTER, sweep_stale_tasks
+
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    router_task = stage_task(db_session, latest_stage(db_session, job))
+    from datetime import datetime
+
+    router_task.status = "running"
+    router_task.started_at = datetime.now(UTC) - STALE_RUNNING_AFTER - timedelta(minutes=10)
+    db_session.commit()
+
+    stats = sweep_stale_tasks(db_session, stale_after=STALE_RUNNING_AFTER)
+
+    assert stats["stale_tasks"] == 1
+    db_session.refresh(router_task)
+    assert router_task.status == "failed"
+    assert "sweeper" in (router_task.error_message or "")
+    db_session.refresh(job)
+    assert job.status == "failed"
+    assert latest_stage(db_session, job).status == "failed"
+
+
+def test_sweep_skips_recent_running_tasks(db_session, test_user):
+    from datetime import datetime
+
+    from app.services.orchestrator import STALE_RUNNING_AFTER, sweep_stale_tasks
+
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    router_task = stage_task(db_session, latest_stage(db_session, job))
+    router_task.status = "running"
+    router_task.started_at = datetime.now(UTC)  # just now — well under the threshold
+    db_session.commit()
+
+    stats = sweep_stale_tasks(db_session, stale_after=STALE_RUNNING_AFTER)
+
+    assert stats["stale_tasks"] == 0
+    db_session.refresh(router_task)
+    assert router_task.status == "running"

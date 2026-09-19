@@ -50,27 +50,48 @@ def _seed_batch(db, day, *, position=2.1, impressions=500, clicks=20, ctr=4.0, a
     db.add_all(
         [
             SearchConsoleDim(
-                export_id=sc.id, domain=DOMAIN, dim_type="page", key=URL,
-                clicks=clicks, impressions=impressions, ctr=ctr, position=position,
+                export_id=sc.id,
+                domain=DOMAIN,
+                dim_type="page",
+                key=URL,
+                clicks=clicks,
+                impressions=impressions,
+                ctr=ctr,
+                position=position,
             ),
             SearchConsoleDim(
-                export_id=sc.id, domain=DOMAIN, dim_type="query", key="klean gutter guards",
-                clicks=clicks, impressions=impressions, ctr=ctr, position=position,
+                export_id=sc.id,
+                domain=DOMAIN,
+                dim_type="query",
+                key="klean gutter guards",
+                clicks=clicks,
+                impressions=impressions,
+                ctr=ctr,
+                position=position,
             ),
         ]
     )
     ai_row = _export(db, "ai_overview", day)
     db.add(
         AIOverviewImpressions(
-            export_id=ai_row.id, domain=DOMAIN, dim_type="pages", key=URL,
-            day=ai_row.period_to.date(), impressions=ai,
+            export_id=ai_row.id,
+            domain=DOMAIN,
+            dim_type="pages",
+            key=URL,
+            day=ai_row.period_to.date(),
+            impressions=ai,
         )
     )
     kw = _export(db, "keyword_estimate", day)
     db.add(
         KeywordEstimate(
-            export_id=kw.id, domain=DOMAIN, keyword="klean gutter guards",
-            volume=1200, position=position, est_visits=visited, ranking_url=URL,
+            export_id=kw.id,
+            domain=DOMAIN,
+            keyword="klean gutter guards",
+            volume=1200,
+            position=position,
+            est_visits=visited,
+            ranking_url=URL,
         )
     )
     tp = _export(db, "top_page", day)
@@ -79,8 +100,13 @@ def _seed_batch(db, day, *, position=2.1, impressions=500, clicks=20, ctr=4.0, a
     if calls:
         db.add(
             CallTracking(
-                export_id=call.id, domain=DOMAIN, name="Caller", status="answered",
-                page="/gutter-guards/", last_url=URL, call_date=call.period_to.date(),
+                export_id=call.id,
+                domain=DOMAIN,
+                name="Caller",
+                status="answered",
+                page="/gutter-guards/",
+                last_url=URL,
+                call_date=call.period_to.date(),
             )
         )
     db.commit()
@@ -88,8 +114,12 @@ def _seed_batch(db, day, *, position=2.1, impressions=500, clicks=20, ctr=4.0, a
 
 def _job(db, user, brand="kleangutter", title="Klean Gutter Guards page"):
     job = AgentJob(
-        title=title, request="Write a page for clean gutters", brand=brand,
-        content_type="local", status="awaiting_approval", created_by=user.id,
+        title=title,
+        request="Write a page for clean gutters",
+        brand=brand,
+        content_type="local",
+        status="awaiting_approval",
+        created_by=user.id,
     )
     db.add(job)
     db.commit()

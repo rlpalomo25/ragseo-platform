@@ -1,4 +1,5 @@
 import pytest
+
 from tests.conftest import login
 
 
@@ -18,11 +19,14 @@ def test_create_job_requires_auth(client):
 
 def test_create_job_dispatches_router(client, test_user, no_celery):
     login(client, "testwriter", "secret123")
-    response = client.post("/api/jobs", json={
-        "request": "Write a MasterShield vs LeafFilter comparison page",
-        "brand": "mastershield",
-        "content_type": "comparison",
-    })
+    response = client.post(
+        "/api/jobs",
+        json={
+            "request": "Write a MasterShield vs LeafFilter comparison page",
+            "brand": "mastershield",
+            "content_type": "comparison",
+        },
+    )
     assert response.status_code == 201
     body = response.json()
     assert body["status"] == "running"
@@ -89,10 +93,20 @@ def test_job_detail_404_on_bad_uuid(client, test_user):
 def test_list_jobs_filters_by_brand_and_status(client, test_user, db_session):
     from app.services.orchestrator import create_job
 
-    job_a = create_job(db_session, created_by=test_user.id, request="MasterShield comparison page",
-                       brand="mastershield", content_type="comparison")
-    create_job(db_session, created_by=test_user.id, request="Klean Gutter local page",
-              brand="klean_gutter", content_type="local_page")
+    job_a = create_job(
+        db_session,
+        created_by=test_user.id,
+        request="MasterShield comparison page",
+        brand="mastershield",
+        content_type="comparison",
+    )
+    create_job(
+        db_session,
+        created_by=test_user.id,
+        request="Klean Gutter local page",
+        brand="klean_gutter",
+        content_type="local_page",
+    )
     job_a.status = "awaiting_approval"
     db_session.commit()
 
@@ -106,5 +120,7 @@ def test_list_jobs_filters_by_brand_and_status(client, test_user, db_session):
     assert len(by_status) == 1
     assert by_status[0]["id"] == str(job_a.id)
 
-    both = client.get("/api/jobs", params={"brand": "mastershield", "content_type": "comparison"}).json()["jobs"]
+    both = client.get("/api/jobs", params={"brand": "mastershield", "content_type": "comparison"}).json()[
+        "jobs"
+    ]
     assert len(both) == 1

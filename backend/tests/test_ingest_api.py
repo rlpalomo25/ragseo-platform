@@ -1,7 +1,4 @@
-from pathlib import Path
-
 import pytest
-
 from app.services.doc_ingestion import file_hash
 
 
@@ -35,6 +32,7 @@ def test_ingest_status_requires_admin(client, test_user, ingest_dir):
 
 def test_ingest_status_reports_new_changed_unchanged(client, admin_user, db_session, ingest_dir):
     from app.models.chunk import DocChunk
+
     from tests.conftest import seed_doc
 
     d1_path = ingest_dir / "Doc 100_ Test D1.md"
@@ -50,12 +48,28 @@ def test_ingest_status_reports_new_changed_unchanged(client, admin_user, db_sess
     db_session.add(changed)
     db_session.flush()
 
-    db_session.add(DocChunk(document_id=unchanged.id, chunk_index=0, heading_path="",
-                           content="Body of the first doc.", token_count=5, content_hash="h",
-                           embedding=None))
-    db_session.add(DocChunk(document_id=unchanged.id, chunk_index=1, heading_path="",
-                           content="more", token_count=2, content_hash="h2",
-                           embedding=[0.1] * 768))
+    db_session.add(
+        DocChunk(
+            document_id=unchanged.id,
+            chunk_index=0,
+            heading_path="",
+            content="Body of the first doc.",
+            token_count=5,
+            content_hash="h",
+            embedding=None,
+        )
+    )
+    db_session.add(
+        DocChunk(
+            document_id=unchanged.id,
+            chunk_index=1,
+            heading_path="",
+            content="more",
+            token_count=2,
+            content_hash="h2",
+            embedding=[0.1] * 768,
+        )
+    )
     db_session.commit()
 
     login_admin(client)

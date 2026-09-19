@@ -13,6 +13,7 @@ Revision ID: 0008_learning_loop
 Revises: 0007_login_throttle
 Create Date: 2026-09-18
 """
+
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import Uuid
@@ -27,8 +28,13 @@ def upgrade() -> None:
     op.create_table(
         "content_publications",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("job_id", Uuid(as_uuid=True), sa.ForeignKey("agent_jobs.id", ondelete="CASCADE"),
-                  nullable=False, index=True),
+        sa.Column(
+            "job_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("agent_jobs.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
         sa.Column("publish_url", sa.Text(), nullable=False),
         sa.Column("publish_date", sa.Date(), nullable=True),
         sa.Column("target_keyword", sa.String(500), nullable=True),

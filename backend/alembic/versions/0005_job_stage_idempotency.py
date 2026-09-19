@@ -4,8 +4,8 @@ Revision ID: 0005_job_stage_idempotency
 Revises: 0004_external_data
 Create Date: 2026-09-15
 """
+
 from alembic import op
-import sqlalchemy as sa
 
 revision = "0005_job_stage_idempotency"
 down_revision = "0004_external_data"
@@ -14,10 +14,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # One stage per (job, sequence). With Celery `acks_late` + 
-    # `reject_on_worker_lost`, a lost worker redelivers the agent task and 
-    # `advance_job` re-runs; the DB constraint turns what would be a silent 
-    # duplicate stage row (double LLM spend, double revision_count bump) into 
+    # One stage per (job, sequence). With Celery `acks_late` +
+    # `reject_on_worker_lost`, a lost worker redelivers the agent task and
+    # `advance_job` re-runs; the DB constraint turns what would be a silent
+    # duplicate stage row (double LLM spend, double revision_count bump) into
     # a caught IntegrityError that the sweeper/guard handles instead.
     op.create_unique_constraint(
         "uq_job_stages_job_sequence",

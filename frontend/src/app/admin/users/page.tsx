@@ -180,10 +180,12 @@ function EditUserModal({ user, onClose, onUpdated }: { user: User; onClose: () =
   const [role, setRole] = useState(user.role);
   const [isActive, setIsActive] = useState(user.is_active);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError(null);
     try {
       await apiFetch(`/api/users/${user.id}`, {
         method: "PUT",
@@ -191,7 +193,8 @@ function EditUserModal({ user, onClose, onUpdated }: { user: User; onClose: () =
       });
       onUpdated();
       onClose();
-    } catch {
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update user");
     } finally {
       setLoading(false);
     }
@@ -222,6 +225,7 @@ function EditUserModal({ user, onClose, onUpdated }: { user: User; onClose: () =
           />
           <label htmlFor="edit-active" className="text-sm text-gray-700">Active</label>
         </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={loading}>Save</Button>

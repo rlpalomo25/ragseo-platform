@@ -1,13 +1,15 @@
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session as DBSession
 from pydantic import BaseModel
+from sqlalchemy.orm import Session as DBSession
+
 from app.database import get_db
-from app.models.user import User
+from app.dependencies import require_writer
 from app.models.agent_task import AgentTask
-from app.dependencies import get_current_user, require_writer
+from app.models.user import User
 from app.services.agent_runner import create_task
-from app.tasks import run_agent_task, AGENT_FUNCTIONS
+from app.tasks import AGENT_FUNCTIONS, run_agent_task
 
 router = APIRouter()
 
@@ -35,11 +37,13 @@ class AgentTaskResponse(BaseModel):
 def list_agents(user: User = Depends(require_writer)):
     agents = []
     for name in AGENT_FUNCTIONS:
-        agents.append({
-            "name": name,
-            "display_name": name.replace("_", " ").title(),
-            "status": "ready",
-        })
+        agents.append(
+            {
+                "name": name,
+                "display_name": name.replace("_", " ").title(),
+                "status": "ready",
+            }
+        )
     return {"agents": agents}
 
 

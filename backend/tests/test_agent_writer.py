@@ -1,9 +1,7 @@
-import json
 import pytest
-from tests.conftest import seed_doc
 from app.services.agents import writer as writer_module
-from app.services.agents.writer import run_writer, WriterMeta
-
+from app.services.agents.writer import WriterMeta, run_writer
+from pydantic import ValidationError
 
 WRITER_RESPONSE = (
     "===RAGSEO_META===\n"
@@ -30,10 +28,13 @@ def captured(monkeypatch):
 
 
 def test_writer_happy_path(doctrine_corpus, captured):
-    result = run_writer(doctrine_corpus, {
-        "request": "Comparison page: MasterShield vs LeafFilter shingle grit",
-        "content_type": "comparison",
-    })
+    result = run_writer(
+        doctrine_corpus,
+        {
+            "request": "Comparison page: MasterShield vs LeafFilter shingle grit",
+            "content_type": "comparison",
+        },
+    )
 
     out = result["output"]
     assert out["title"] == "MasterShield vs LeafFilter"
@@ -46,14 +47,17 @@ def test_writer_happy_path(doctrine_corpus, captured):
 
 
 def test_writer_prompt_contains_governing_doctrine(doctrine_corpus, captured):
-    run_writer(doctrine_corpus, {
-        "request": "MasterShield comparison page",
-        "content_type": "comparison",
-    })
+    run_writer(
+        doctrine_corpus,
+        {
+            "request": "MasterShield comparison page",
+            "content_type": "comparison",
+        },
+    )
     user_msg = captured["user_message"]
-    assert "Problem-first posture" in user_msg          # brand module body
+    assert "Problem-first posture" in user_msg  # brand module body
     assert "Three questions above the fold" in user_msg  # writer playbook body
-    assert "comparison table required" in user_msg       # structure companion
+    assert "comparison table required" in user_msg  # structure companion
     assert "Master Content Doctrine" in user_msg
 
 
@@ -92,7 +96,7 @@ def test_writer_coerces_dict_archetype(doctrine_corpus, monkeypatch):
 
 
 def test_writer_invalid_meta_raises(doctrine_corpus, monkeypatch):
-    bad = "===RAGSEO_META===\n{\"meta_title\": \"only\"}\n===RAGSEO_CONTENT===\nbody"
+    bad = '===RAGSEO_META===\n{"meta_title": "only"}\n===RAGSEO_CONTENT===\nbody'
     monkeypatch.setattr(writer_module, "call_llm", lambda **kw: bad)
     with pytest.raises(ValueError, match="validation"):
         run_writer(doctrine_corpus, {"request": "MasterShield page"})
@@ -104,5 +108,5 @@ def test_writer_missing_request_raises(doctrine_corpus):
 
 
 def test_writer_meta_model_rejects_empty_title():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         WriterMeta(title="", meta_title="x", meta_description="y")

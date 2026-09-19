@@ -1,14 +1,16 @@
-import re
 import hashlib
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import UTC, datetime
 from pathlib import Path
+
 from sqlalchemy.orm import Session as DBSession
-from app.models.document import Document, DocReference
-from app.models.chunk import DocChunk
+
 from app.config import get_settings
-from app.services.chunking import chunk_document, chunk_content_hash
-from app.services.embeddings import embed_texts, EmbeddingError
+from app.models.chunk import DocChunk
+from app.models.document import DocReference, Document
+from app.services.chunking import chunk_content_hash, chunk_document
+from app.services.embeddings import EmbeddingError, embed_texts
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -16,7 +18,11 @@ settings = get_settings()
 DOC_PATTERN = re.compile(r"Doc\s+(\d+(?:-\w+)?)\s*[_:]\s*(.+?)(?:\.md)?$", re.IGNORECASE)
 VERSION_PATTERN = re.compile(r"[Vv]ersion[*\s:]+?([\d][\d.]*)")
 SERIES_MAP = {
-    "1": "100", "2": "200", "3": "300", "4": "400", "9": "900",
+    "1": "100",
+    "2": "200",
+    "3": "300",
+    "4": "400",
+    "9": "900",
 }
 
 
@@ -98,15 +104,17 @@ def _rechunk_document(db: DBSession, doc: Document, stats: dict) -> None:
             stats["embedding_failures"] += 1
 
     for chunk_data in chunks:
-        db.add(DocChunk(
-            document_id=doc.id,
-            chunk_index=chunk_data["chunk_index"],
-            heading_path=chunk_data["heading_path"],
-            content=chunk_data["content"],
-            token_count=len(chunk_data["content"]) // 4,
-            content_hash=chunk_content_hash(chunk_data["content"]),
-            embedding=vectors[chunk_data["chunk_index"]] if vectors else None,
-        ))
+        db.add(
+            DocChunk(
+                document_id=doc.id,
+                chunk_index=chunk_data["chunk_index"],
+                heading_path=chunk_data["heading_path"],
+                content=chunk_data["content"],
+                token_count=len(chunk_data["content"]) // 4,
+                content_hash=chunk_content_hash(chunk_data["content"]),
+                embedding=vectors[chunk_data["chunk_index"]] if vectors else None,
+            )
+        )
     stats["chunks"] += len(chunks)
 
 
@@ -119,7 +127,15 @@ def ingest_all_docs(db: DBSession) -> dict:
         )
 
     md_files = sorted(doctrine_path.glob("*.md"))
-    stats = {"created": 0, "updated": 0, "skipped": 0, "superseded": 0, "chunks": 0, "embedding_failures": 0, "errors": []}
+    stats = {
+        "created": 0,
+        "updated": 0,
+        "skipped": 0,
+        "superseded": 0,
+        "chunks": 0,
+        "embedding_failures": 0,
+        "errors": [],
+    }
 
     for filepath in md_files:
         if filepath.name.startswith(".") or ":Zone.Identifier" in filepath.name:
@@ -134,11 +150,14 @@ def ingest_all_docs(db: DBSession) -> dict:
             version = extract_version(content)
             doc_type = extract_doc_type(title, filename)
             word_count = len(content.split())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             existing_by_filename = db.query(Document).filter(Document.filename == filename).first()
             if existing_by_filename and existing_by_filename.file_hash == fhash:
-                has_chunks = db.query(DocChunk).filter(DocChunk.document_id == existing_by_filename.id).first() is not None
+                has_chunks = (
+                    db.query(DocChunk).filter(DocChunk.document_id == existing_by_filename.id).first()
+                    is not None
+                )
                 needs_backfill = False
                 if settings.embeddings_enabled:
                     if not has_chunks:
@@ -147,7 +166,10 @@ def ingest_all_docs(db: DBSession) -> dict:
                     else:
                         has_vectors = (
                             db.query(DocChunk)
-                            .filter(DocChunk.document_id == existing_by_filename.id, DocChunk.embedding.isnot(None))
+                            .filter(
+                                DocChunk.document_id == existing_by_filename.id,
+                                DocChunk.embedding.isnot(None),
+                            )
                             .first()
                             is not None
                         )
@@ -163,11 +185,26 @@ def ingest_all_docs(db: DBSession) -> dict:
                 continue
 
             # Check for existing document with same doc_number but different filename (superseded)
-            existing_by_number = db.query(Document).filter(
-                Document.doc_number == doc_number,
-                Document.filename != filename,
-                Document.status == "active"
-            ).first()
+            existing_by_number = (
+                db.query(Document)
+                .filter(
+                    Document.doc_number == doc_number,
+                    Document.filename != filename,
+                    Document.status == "active",
+                )
+                .first()
+            )
+
+            # Free the doc_number BEFORE the INSERT below: if a different
+            # active doc owns this number, supersede it first (and flush) so
+            # the new/updated row does not violate uq_documents_doc_number.
+            # Inserting first would raise IntegrityError inside the per-file
+            # try (and, left unrolled-back, poison every later file).
+            if existing_by_number:
+                existing_by_number.status = "superseded"
+                existing_by_number.last_updated = now
+                stats["superseded"] = stats.get("superseded", 0) + 1
+                db.flush()
 
             if existing_by_filename:
                 existing_by_filename.content = content
@@ -198,16 +235,10 @@ def ingest_all_docs(db: DBSession) -> dict:
                 db.flush()
                 stats["created"] += 1
 
-            # If there's a different active document with the same doc_number, mark it superseded
-            if existing_by_number:
-                existing_by_number.status = "superseded"
-                existing_by_number.last_updated = now
-                stats["superseded"] = stats.get("superseded", 0) + 1
-
             _rechunk_document(db, doc, stats)
 
         except Exception as e:
-            stats["errors"].append(f"{filename}: {str(e)}")
+            stats["errors"].append(f"{filename}: {e!s}")
 
     db.commit()
 
@@ -216,11 +247,13 @@ def ingest_all_docs(db: DBSession) -> dict:
     for doc in all_docs:
         refs = extract_references(doc.content)
         for ref in refs:
-            db.add(DocReference(
-                source_doc_id=doc.id,
-                target_doc_number=ref,
-                reference_type="references",
-            ))
+            db.add(
+                DocReference(
+                    source_doc_id=doc.id,
+                    target_doc_number=ref,
+                    reference_type="references",
+                )
+            )
     db.commit()
 
     return stats
@@ -235,7 +268,15 @@ def reconcile_doctrine(db: DBSession) -> dict:
     if not doctrine_path.exists():
         raise FileNotFoundError(f"Doctrine path not found: {doctrine_path}")
 
-    stats = {"created": 0, "missing": 0, "superseded": 0, "errors": []}
+    stats = {
+        "created": 0,
+        "updated": 0,
+        "missing": 0,
+        "superseded": 0,
+        "chunks": 0,
+        "embedding_failures": 0,
+        "errors": [],
+    }
 
     # Get all active docs from DB
     db_docs = db.query(Document).filter(Document.status == "active").all()
@@ -261,13 +302,28 @@ def reconcile_doctrine(db: DBSession) -> dict:
             version = extract_version(content)
             doc_type = extract_doc_type(title, filename)
             word_count = len(content.split())
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
 
             existing_by_filename = db_by_filename.get(filename)
             if existing_by_filename and existing_by_filename.file_hash == fhash:
                 continue  # unchanged
 
             existing_by_number = db_by_number.get(doc_number)
+
+            # Same unique-constraint discipline as ingest_all_docs: supersede
+            # the old ACTIVE owner of this doc_number and FLUSH before the
+            # new row is inserted. The dict is written after each create below
+            # so a doc ingested earlier in THIS scan is visible to later files
+            # (db_by_number is built once, before the loop).
+            if (
+                existing_by_number
+                and existing_by_number.status == "active"
+                and existing_by_number.filename != filename
+            ):
+                existing_by_number.status = "superseded"
+                existing_by_number.last_updated = now
+                stats["superseded"] = stats.get("superseded", 0) + 1
+                db.flush()
 
             if existing_by_filename:
                 # Update existing
@@ -280,6 +336,8 @@ def reconcile_doctrine(db: DBSession) -> dict:
                 existing_by_filename.word_count = word_count
                 existing_by_filename.file_hash = fhash
                 existing_by_filename.last_updated = now
+                db_by_filename[filename] = existing_by_filename
+                db_by_number[doc_number] = existing_by_filename
                 stats["updated"] = stats.get("updated", 0) + 1
                 _rechunk_document(db, existing_by_filename, stats)
             else:
@@ -298,23 +356,23 @@ def reconcile_doctrine(db: DBSession) -> dict:
                 )
                 db.add(doc)
                 db.flush()
+                db_by_filename[filename] = doc
+                db_by_number[doc_number] = doc
                 stats["created"] += 1
                 _rechunk_document(db, doc, stats)
 
-                # Check for superseded (different filename, same doc_number)
-                if existing_by_number and existing_by_number.filename != filename:
-                    existing_by_number.status = "superseded"
-                    existing_by_number.last_updated = now
-                    stats["superseded"] += 1
-
         except Exception as e:
-            stats["errors"].append(f"{filepath.name}: {str(e)}")
+            stats["errors"].append(f"{filepath.name}: {e!s}")
 
-    # Mark DB docs not on filesystem as missing
+    # Mark DB docs not on filesystem as missing. Skip docs this run already
+    # moved off active (superseded above) — otherwise the sweep would clobber
+    # their fresh "superseded" status with "missing".
     for doc in db_docs:
+        if doc.status != "active":
+            continue
         if doc.filename not in fs_filenames:
             doc.status = "missing"
-            doc.last_updated = datetime.now(timezone.utc)
+            doc.last_updated = datetime.now(UTC)
             stats["missing"] += 1
 
     db.commit()
@@ -325,11 +383,13 @@ def reconcile_doctrine(db: DBSession) -> dict:
     for doc in all_docs:
         refs = extract_references(doc.content)
         for ref in refs:
-            db.add(DocReference(
-                source_doc_id=doc.id,
-                target_doc_number=ref,
-                reference_type="references",
-            ))
+            db.add(
+                DocReference(
+                    source_doc_id=doc.id,
+                    target_doc_number=ref,
+                    reference_type="references",
+                )
+            )
     db.commit()
 
     return stats

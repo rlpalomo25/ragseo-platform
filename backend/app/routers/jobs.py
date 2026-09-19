@@ -1,14 +1,15 @@
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
 from app.database import get_db
-from app.models.user import User
-from app.models.job import AgentJob, JobStage
+from app.dependencies import require_writer
 from app.models.agent_task import AgentTask
-from app.dependencies import get_current_user, require_writer
-from app.services.orchestrator import create_job, approve_job, cancel_job
+from app.models.job import AgentJob, JobStage
+from app.models.user import User
+from app.services.orchestrator import approve_job, cancel_job, create_job
 
 router = APIRouter()
 
@@ -111,31 +112,24 @@ def get_job(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    stages = (
-        db.query(JobStage)
-        .filter(JobStage.job_id == job.id)
-        .order_by(JobStage.sequence.asc())
-        .all()
-    )
+    stages = db.query(JobStage).filter(JobStage.job_id == job.id).order_by(JobStage.sequence.asc()).all()
 
     stage_details = []
     for stage in stages:
-        task = (
-            db.query(AgentTask).filter(AgentTask.id == stage.task_id).first()
-            if stage.task_id
-            else None
+        task = db.query(AgentTask).filter(AgentTask.id == stage.task_id).first() if stage.task_id else None
+        stage_details.append(
+            StageDetail(
+                id=str(stage.id),
+                sequence=stage.sequence,
+                agent_type=stage.agent_type,
+                task_id=str(stage.task_id) if stage.task_id else None,
+                status=stage.status,
+                feedback=stage.feedback,
+                task_status=task.status if task else None,
+                output_data=task.output_data if task else None,
+                error_message=task.error_message if task else None,
+            )
         )
-        stage_details.append(StageDetail(
-            id=str(stage.id),
-            sequence=stage.sequence,
-            agent_type=stage.agent_type,
-            task_id=str(stage.task_id) if stage.task_id else None,
-            status=stage.status,
-            feedback=stage.feedback,
-            task_status=task.status if task else None,
-            output_data=task.output_data if task else None,
-            error_message=task.error_message if task else None,
-        ))
 
     return JobDetail(
         **_summary(job).model_dump(),
@@ -157,7 +151,7 @@ def approve_existing_job(
     try:
         job = approve_job(db, job)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return _summary(job)
 
 
@@ -173,5 +167,5 @@ def cancel_existing_job(
     try:
         job = cancel_job(db, job)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return _summary(job)

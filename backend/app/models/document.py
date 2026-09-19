@@ -1,6 +1,8 @@
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, Integer, DateTime, ForeignKey, Uuid, UniqueConstraint
+from datetime import UTC, datetime
+
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, Text, Uuid, text
+
 from app.database import Base
 
 
@@ -8,7 +10,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    doc_number = Column(String(100), nullable=False, index=True, unique=True)
+    doc_number = Column(String(100), nullable=False, index=True)
     title = Column(String(500), nullable=False)
     filename = Column(String(255), nullable=False)
     content = Column(Text, nullable=False)
@@ -19,10 +21,20 @@ class Document(Base):
     word_count = Column(Integer)
     file_hash = Column(String(64))
     last_updated = Column(DateTime(timezone=True), nullable=True)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
     __table_args__ = (
-        UniqueConstraint("doc_number", name="uq_documents_doc_number"),
+        # doc_number is unique among ACTIVE docs only: superseding a doc frees
+        # its number for a newer take, but the superseded row (same number)
+        # must still be kept for history. A full-table unique constraint (as in
+        # the original 0006 draft) makes "supersede" impossible at runtime.
+        Index(
+            "uq_documents_doc_number_active",
+            "doc_number",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
 

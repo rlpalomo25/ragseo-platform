@@ -1,11 +1,12 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import text
-from app.database import SessionLocal, engine, Base
+from app.database import Base, SessionLocal, engine
 from app.services.auth_service import create_default_admin
 from app.services.doc_ingestion import ingest_all_docs
+from sqlalchemy import text
 
 
 def seed():
@@ -22,7 +23,10 @@ def seed():
             print("Admin user already exists, skipping.")
 
         stats = ingest_all_docs(db)
-        print(f"Document ingestion: {stats['created']} created, {stats['updated']} updated, {stats['skipped']} skipped, {stats['chunks']} chunks")
+        print(
+            f"Document ingestion: {stats['created']} created, "
+            f"{stats['updated']} updated, {stats['skipped']} skipped, {stats['chunks']} chunks"
+        )
         if stats.get("embedding_failures"):
             print(f"Embedding failures (chunks stored without vectors): {stats['embedding_failures']}")
         if stats["errors"]:

@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import Optional
 
 
 class CreateUser(BaseModel):
@@ -9,8 +8,8 @@ class CreateUser(BaseModel):
 
 
 class UpdateUser(BaseModel):
-    role: Optional[str] = None
-    is_active: Optional[bool] = None
+    role: str | None = None
+    is_active: bool | None = None
 
 
 class UserResponse(BaseModel):
@@ -19,7 +18,7 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     created_at: str
-    last_login: Optional[str] = None
+    last_login: str | None = None
 
     model_config = {"from_attributes": True}
 

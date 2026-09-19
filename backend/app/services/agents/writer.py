@@ -1,3 +1,4 @@
+# ruff: noqa: E501  (agent prompt prose is deliberately long-form)
 """RAGSEO Writer Agent.
 
 Generates content drafts grounded in the governing doctrine for the detected
@@ -7,25 +8,25 @@ matching the content type (Doc 316-* series). Supplementary doctrine is
 pulled via hybrid retrieval. Output carries a provenance stamp of every doc
 version used (Doc 329/C17).
 """
+
 import json
+
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.orm import Session as DBSession
 
-from app.services.llm_client import call_llm
+from app.services.agent_runner import build_retrieval_context
+from app.services.agents.llm_output import (
+    parse_meta_content_response,
+)
 from app.services.doctrine import (
     BRAND_CONFIG,
     detect_brand,
     load_governing_docs,
     structure_doc_for,
 )
-from app.services.agent_runner import build_retrieval_context
 from app.services.external_data import build_market_context
 from app.services.learning_loop import build_learning_context
-from app.services.agents.llm_output import (
-    CONTENT_DELIMITER,
-    META_DELIMITER,
-    parse_meta_content_response,
-)
+from app.services.llm_client import call_llm
 
 WRITER_SYSTEM_PROMPT = """You are the RAGSEO Writer Agent. You produce content drafts that comply exactly with the RAGSEO doctrine excerpts provided to you.
 
@@ -57,8 +58,13 @@ class WriterMeta(BaseModel):
     brand: str | None = None
 
     @field_validator(
-        "title", "meta_title", "meta_description",
-        "archetype", "content_type", "brand", mode="before",
+        "title",
+        "meta_title",
+        "meta_description",
+        "archetype",
+        "content_type",
+        "brand",
+        mode="before",
     )
     @classmethod
     def coerce_string(cls, v):
@@ -98,7 +104,9 @@ def run_writer(db: DBSession, input_data: dict) -> dict:
     # 2. Supplementary retrieval for anything the governing docs don't cover.
     supplement_query = f"{request_text} {content_type or ''} {brand}".strip()
     supplement_context, sources = build_retrieval_context(
-        db, supplement_query, top_k=6,
+        db,
+        supplement_query,
+        top_k=6,
         doc_numbers=input_data.get("applicable_docs") or None,
     )
     loaded_numbers = {p["doc_number"] for p in provenance}
@@ -114,9 +122,9 @@ def run_writer(db: DBSession, input_data: dict) -> dict:
 ## Supplementary Doctrine Excerpts
 {supplement_context if extra_sources else "(none beyond governing docs)"}
 
-{f"## Supporting Market Data" + chr(10) + market_context if market_context else ""}
+{"## Supporting Market Data" + chr(10) + market_context if market_context else ""}
 
-{f"## Performance Memory — what past published content measured (be informed, do NOT copy)" + chr(10) + learning_context if learning_context else ""}
+{"## Performance Memory — what past published content measured (be informed, do NOT copy)" + chr(10) + learning_context if learning_context else ""}
 
 ## Writing Request
 {request_text}

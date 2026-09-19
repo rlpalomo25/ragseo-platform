@@ -1,5 +1,22 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
+function handleUnauthorized(res: Response): void {
+  if (res.status !== 401) return;
+  if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+    window.location.href = "/login";
+  }
+  throw new Error("Unauthorized");
+}
+
+async function parseError(res: Response): Promise<Error> {
+  try {
+    const body = await res.json();
+    return new Error(body.detail || `Request failed: ${res.status}`);
+  } catch {
+    return new Error(`Request failed: ${res.status}`);
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {}
@@ -13,17 +30,8 @@ export async function apiFetch<T>(
     ...options,
   });
 
-  if (res.status === 401) {
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
-    }
-    throw new Error("Unauthorized");
-  }
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${res.status}`);
-  }
+  handleUnauthorized(res);
+  if (!res.ok) throw await parseError(res);
 
   return res.json();
 }
@@ -38,17 +46,8 @@ export async function apiUpload<T>(
     body: formData,
   });
 
-  if (res.status === 401) {
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
-    }
-    throw new Error("Unauthorized");
-  }
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed: ${res.status}`);
-  }
+  handleUnauthorized(res);
+  if (!res.ok) throw await parseError(res);
 
   return res.json();
 }

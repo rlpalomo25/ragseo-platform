@@ -1,7 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import auth, users, documents, agents, jobs, stats, ingest, learning
+
 from app.config import get_settings
+from app.routers import agents, auth, documents, ingest, jobs, learning, stats, users
 
 settings = get_settings()
 app = FastAPI(title="RAGSEO Platform", version="0.1.0")

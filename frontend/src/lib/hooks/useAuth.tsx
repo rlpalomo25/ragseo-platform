@@ -38,7 +38,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
-    await apiLogout();
+    try {
+      await apiLogout();
+    } catch {
+      // Server-side session invalidation failed; clear local state anyway.
+    }
     setUser(null);
     window.location.href = "/login";
   }, []);

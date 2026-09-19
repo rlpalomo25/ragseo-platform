@@ -1,6 +1,8 @@
 import uuid
-from datetime import datetime, timezone
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON, Uuid
+from datetime import UTC, datetime
+
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, Text, Uuid
+
 from app.database import Base
 
 
@@ -14,6 +16,6 @@ class AgentTask(Base):
     output_data = Column(JSON)
     error_message = Column(Text)
     created_by = Column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))

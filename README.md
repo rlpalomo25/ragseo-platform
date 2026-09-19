@@ -80,3 +80,10 @@ cd backend && pip install -r requirements.txt && pytest -m "not integration"
 
 See `REQUIREMENTS.md` for the roadmap and `IMPLEMENTATION_PLAN.md` for current
 status, verification log, and next steps.
+
+## License
+
+**Proprietary — paid commercial software.** RAGSEO Platform is not open
+source. Use, modification, and distribution are governed by the license you
+purchased. You must have a valid paid license to run this software. See
+`LICENSE` for the full terms; contact the maintainer for licensing.

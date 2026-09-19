@@ -1,6 +1,6 @@
-from uuid import UUID
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session as DBSession
+
 from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import get_user_by_token

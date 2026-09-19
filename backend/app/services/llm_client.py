@@ -3,23 +3,21 @@
 Celery runs each agent task under a 600s soft / 900s hard limit. A single
 messages.create request therefore gets:
   * a client timeout (llm_timeout_seconds, default 540s) — always below the
-    soft limit so one hung request cannot claim a whole default worker slot
-    budget is worth far less than the alternative;
+    soft limit so one hung request cannot claim a whole default worker slot;
   * a bounded exponential-backoff retry loop (llm_max_retries, default 2)
     for transient faults (429 rate limits, 5xx, connection/timeout errors) —
     capped so the combined worst-case wall time stays under the hard limit.
 """
+
 import logging
 import time
-from typing import Any
 
 import anthropic
 from anthropic import (
     Anthropic,
-    APIStatusError,
     APIConnectionError,
+    APIStatusError,
     APITimeoutError,
-    RateLimitError,
 )
 
 from app.config import get_settings
@@ -71,23 +69,25 @@ def call_llm(
                 messages=[{"role": "user", "content": user_message}],
             )
             break
-        except Exception as exc:  # noqa: BLE001 - we only re-raise through _is_retryable
+        except Exception as exc:
             if not _is_retryable(exc):
                 raise
             last_error = exc
             if attempt >= settings.llm_max_retries:
                 break
-            backoff = settings.llm_retry_backoff_base * (2 ** attempt)
+            backoff = settings.llm_retry_backoff_base * (2**attempt)
             logger.warning(
                 "LLM call failed (attempt %d/%d): %s — retrying in %.1fs",
-                attempt + 1, settings.llm_max_retries + 1, exc, backoff,
+                attempt + 1,
+                settings.llm_max_retries + 1,
+                exc,
+                backoff,
             )
             time.sleep(backoff)
 
     if response is None:
         raise RuntimeError(
-            f"LLM call failed after {settings.llm_max_retries + 1} attempts: "
-            f"{last_error}"
+            f"LLM call failed after {settings.llm_max_retries + 1} attempts: {last_error}"
         ) from last_error
 
     if response.stop_reason == "max_tokens":

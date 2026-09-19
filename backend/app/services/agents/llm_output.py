@@ -4,6 +4,7 @@ Writer-style agents return long markdown content, where JSON-escaping is
 error-prone — they use a delimiter protocol instead. Structured-verdict
 agents (auditor) return pure JSON.
 """
+
 import json
 
 META_DELIMITER = "===RAGSEO_META==="
@@ -34,7 +35,7 @@ def _first_json_object(text: str) -> str | None:
         elif ch == "}":
             depth -= 1
             if depth == 0 and start is not None:
-                return text[start:i + 1]
+                return text[start : i + 1]
     return None
 
 

@@ -1,12 +1,14 @@
-from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, Depends, Response, HTTPException, Request
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy.orm import Session as DBSession
-from app.database import get_db
-from app.schemas.auth import LoginRequest, TokenResponse, MeResponse
-from app.models.user import User
-from app.services.auth_service import verify_password, create_session, delete_session
-from app.dependencies import get_current_user, get_token_from_request
+
 from app.config import get_settings
+from app.database import get_db
+from app.dependencies import get_current_user, get_token_from_request
+from app.models.user import User
+from app.schemas.auth import LoginRequest, MeResponse, TokenResponse
+from app.services.auth_service import create_session, delete_session, verify_password
 
 router = APIRouter()
 
@@ -21,21 +23,21 @@ THROTTLE_BACKOFFS = {
 
 
 def _compute_lock_duration(attempts: int) -> timedelta:
-    """Exponential backoff: each THROTTLE_MAX_ATTEMPTS tier extends the lock."""
+    """Lock duration, escalating per THROTTLE_MAX_ATTEMPTS tier (e.g. every 5 failures)."""
     tier = min(attempts // THROTTLE_MAX_ATTEMPTS, len(THROTTLE_BACKOFFS) - 1)
-    return THROTTLE_BACKOFFS[tier] if tier >= 0 else timedelta(seconds=30)
+    return THROTTLE_BACKOFFS[tier]
 
 
 @router.post("/login", response_model=TokenResponse)
 def login(body: LoginRequest, request: Request, response: Response, db: DBSession = Depends(get_db)):
-    user = db.query(User).filter(User.username == body.username, User.is_active == True).first()
+    user = db.query(User).filter(User.username == body.username, User.is_active).first()
     if not user:
         # Never reveal whether username exists — same error as bad password
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # Check if account is locked
-    if user.locked_until and user.locked_until > datetime.now(timezone.utc):
-        remaining = int((user.locked_until - datetime.now(timezone.utc)).total_seconds())
+    if user.locked_until and user.locked_until > datetime.now(UTC):
+        remaining = int((user.locked_until - datetime.now(UTC)).total_seconds())
         raise HTTPException(
             status_code=401,
             detail=f"Account locked. Try again in {remaining // 60} minutes.",
@@ -46,10 +48,10 @@ def login(body: LoginRequest, request: Request, response: Response, db: DBSessio
         user.failed_login_attempts = 0
         user.locked_until = None
         user.last_failed_login = None
-        user.last_login = datetime.now(timezone.utc)
+        user.last_login = datetime.now(UTC)
         db.commit()
 
-        session, signed_token = create_session(db, user.id)
+        _, signed_token = create_session(db, user.id)
 
         settings = get_settings()
         proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
@@ -58,7 +60,7 @@ def login(body: LoginRequest, request: Request, response: Response, db: DBSessio
             value=signed_token,
             httponly=True,
             samesite="lax",
-            max_age=86400,
+            max_age=settings.session_expiry_hours * 3600,
             secure=(settings.environment == "production" and proto == "https"),
         )
         return TokenResponse(
@@ -68,10 +70,10 @@ def login(body: LoginRequest, request: Request, response: Response, db: DBSessio
     else:
         # Failed login: increment attempts and apply lock if threshold reached
         user.failed_login_attempts += 1
-        user.last_failed_login = datetime.now(timezone.utc)
+        user.last_failed_login = datetime.now(UTC)
 
         if user.failed_login_attempts >= THROTTLE_MAX_ATTEMPTS:
-            user.locked_until = datetime.now(timezone.utc) + _compute_lock_duration(user.failed_login_attempts)
+            user.locked_until = datetime.now(UTC) + _compute_lock_duration(user.failed_login_attempts)
 
         db.commit()
 
@@ -79,7 +81,12 @@ def login(body: LoginRequest, request: Request, response: Response, db: DBSessio
 
 
 @router.post("/logout")
-def logout(request: Request, response: Response, user: User = Depends(get_current_user), db: DBSession = Depends(get_db)):
+def logout(
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+):
     token = get_token_from_request(request)
     if token:
         delete_session(db, token)

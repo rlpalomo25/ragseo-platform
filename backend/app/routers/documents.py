@@ -1,15 +1,17 @@
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DBSession
-from sqlalchemy import or_, func
+
 from app.database import get_db
-from app.schemas.document import DocumentResponse, DocumentDetail, DocumentList
-from app.models.document import Document, DocReference
-from app.models.chunk import DocChunk
-from app.models.user import User
 from app.dependencies import get_current_user, require_admin
+from app.models.chunk import DocChunk
+from app.models.document import DocReference, Document
+from app.models.user import User
+from app.schemas.document import DocumentDetail, DocumentList, DocumentResponse
 from app.services.doc_ingestion import ingest_all_docs
-from app.services.retrieval import retrieve, RetrievedChunk
+from app.services.retrieval import RetrievedChunk, retrieve
 
 router = APIRouter()
 
@@ -27,8 +29,9 @@ def _chunk_stats(db: DBSession, doc_ids: list[UUID] | list[str]) -> dict[str, tu
     return {str(doc_id): (total, embedded) for doc_id, total, embedded in rows}
 
 
-def _to_response(doc: Document, stats: tuple[int, int] | None, snippet: str | None = None,
-                 score: float | None = None) -> DocumentResponse:
+def _to_response(
+    doc: Document, stats: tuple[int, int] | None, snippet: str | None = None, score: float | None = None
+) -> DocumentResponse:
     return DocumentResponse(
         id=str(doc.id),
         doc_number=doc.doc_number,
@@ -93,7 +96,7 @@ def search_documents(
 
         ranked = sorted(by_doc.values(), key=lambda c: c.score, reverse=True)
         total = len(ranked)
-        window = ranked[(page - 1) * page_size: (page - 1) * page_size + page_size]
+        window = ranked[(page - 1) * page_size : (page - 1) * page_size + page_size]
 
         docs_by_number = {
             d.doc_number: d
@@ -106,12 +109,14 @@ def search_documents(
             doc = docs_by_number.get(chunk.doc_number)
             if not doc:
                 continue
-            documents.append(_to_response(
-                doc,
-                stats.get(str(doc.id)),
-                snippet=_make_snippet(chunk.content, q),
-                score=round(chunk.score, 4),
-            ))
+            documents.append(
+                _to_response(
+                    doc,
+                    stats.get(str(doc.id)),
+                    snippet=_make_snippet(chunk.content, q),
+                    score=round(chunk.score, 4),
+                )
+            )
         return DocumentList(documents=documents, total=total, page=page, page_size=page_size)
 
     # Fallback: plain keyword match over document fields.
@@ -143,7 +148,7 @@ def _make_snippet(content: str, query: str, length: int = 240) -> str:
         if idx != -1:
             start = max(0, idx - 60)
             prefix = "…" if start > 0 else ""
-            return f"{prefix}{body[start:start + length]}…"
+            return f"{prefix}{body[start : start + length]}…"
     return body[:length] + ("…" if len(body) > length else "")
 
 
@@ -168,9 +173,7 @@ def get_references(doc_id: UUID, user: User = Depends(get_current_user), db: DBS
     refs = db.query(DocReference).filter(DocReference.source_doc_id == doc.id).all()
     referenced_by = db.query(DocReference).filter(DocReference.target_doc_number == doc.doc_number).all()
     outgoing = [{"target": r.target_doc_number, "type": r.reference_type} for r in refs]
-    incoming_docs = db.query(Document).filter(
-        Document.id.in_([r.source_doc_id for r in referenced_by])
-    ).all()
+    incoming_docs = db.query(Document).filter(Document.id.in_([r.source_doc_id for r in referenced_by])).all()
     incoming = [{"doc_number": d.doc_number, "title": d.title} for d in incoming_docs]
     return {"outgoing": outgoing, "incoming": incoming}
 

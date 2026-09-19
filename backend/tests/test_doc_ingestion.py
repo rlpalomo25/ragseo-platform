@@ -1,40 +1,53 @@
 import pytest
+from app.config import get_settings
 from app.services.doc_ingestion import (
     extract_doc_number,
-    extract_series,
     extract_doc_type,
-    extract_version,
     extract_references,
+    extract_series,
     extract_title,
+    extract_version,
     ingest_all_docs,
 )
-from app.config import get_settings
 
 
-@pytest.mark.parametrize("filename,expected", [
-    ("Doc 100_ Master Content Doctrine.md", "100"),
-    ("Doc 316-MS_ Writer Agent Instructions.md", "316-MS"),
-    ("Doc 361-KG_ Knowledge Pack.md", "361-KG"),
-])
+@pytest.mark.parametrize(
+    "filename,expected",
+    [
+        ("Doc 100_ Master Content Doctrine.md", "100"),
+        ("Doc 316-MS_ Writer Agent Instructions.md", "316-MS"),
+        ("Doc 361-KG_ Knowledge Pack.md", "361-KG"),
+    ],
+)
 def test_extract_doc_number(filename, expected):
     assert extract_doc_number(filename) == expected
 
 
-@pytest.mark.parametrize("doc_number,expected", [
-    ("100", "100"), ("230", "200"), ("316-MS", "300"), ("430", "400"), ("900", "900"),
-])
+@pytest.mark.parametrize(
+    "doc_number,expected",
+    [
+        ("100", "100"),
+        ("230", "200"),
+        ("316-MS", "300"),
+        ("430", "400"),
+        ("900", "900"),
+    ],
+)
 def test_extract_series(doc_number, expected):
     assert extract_series(doc_number) == expected
 
 
-@pytest.mark.parametrize("title,filename,expected", [
-    ("Routing Agent", "Doc 306_ Routing Agent.md", "agent"),
-    ("Writer Playbook", "Doc 170_ Writer Playbook.md", "playbook"),
-    ("MasterShield Brand Module", "Doc 130.md", "brand_module"),
-    ("Constraint System", "Doc 110.md", "system"),
-    ("Keyword Selection SOP", "Doc 151.md", "sop"),
-    ("Something Else", "Doc 105.md", "doctrine"),
-])
+@pytest.mark.parametrize(
+    "title,filename,expected",
+    [
+        ("Routing Agent", "Doc 306_ Routing Agent.md", "agent"),
+        ("Writer Playbook", "Doc 170_ Writer Playbook.md", "playbook"),
+        ("MasterShield Brand Module", "Doc 130.md", "brand_module"),
+        ("Constraint System", "Doc 110.md", "system"),
+        ("Keyword Selection SOP", "Doc 151.md", "sop"),
+        ("Something Else", "Doc 105.md", "doctrine"),
+    ],
+)
 def test_extract_doc_type(title, filename, expected):
     assert extract_doc_type(title, filename) == expected
 
@@ -79,8 +92,8 @@ def test_ingest_all_docs_end_to_end(db_session, tmp_path):
     assert stats["created"] == 1
     assert stats["errors"] == []
 
-    from app.models.document import Document, DocReference
     from app.models.chunk import DocChunk
+    from app.models.document import DocReference, Document
 
     doc = db_session.query(Document).one()
     assert doc.doc_number == "500"
@@ -115,8 +128,8 @@ def test_ingest_skips_unchanged_files(db_session, tmp_path):
 
 
 def test_ingest_backfills_missing_embeddings(db_session, tmp_path, monkeypatch):
-    from app.models.document import Document
     from app.models.chunk import DocChunk
+    from app.models.document import Document
 
     f = tmp_path / "Doc 502_ Needs Embed.md"
     f.write_text("# Doc 502: Needs Embed\n\nBody.\n", encoding="utf-8")
@@ -162,3 +175,82 @@ def test_ingest_missing_path_raises(db_session, tmp_path):
             ingest_all_docs(db_session)
     finally:
         settings.doctrine_path = original
+
+
+def test_ingest_duplicate_doc_number_supersedes_without_unique_violation(db_session, tmp_path):
+    """Fix 5: two files mapping to one doc_number must not hit IntegrityError.
+
+    The old code INSERTED the new doc before superseding the old active owner,
+    so the second file flushed a second ACTIVE row with the same doc_number ->
+    uq_documents_doc_number violation, and the unrolled-back session then
+    poisoned every remaining file (all reported as errors).
+    """
+    from app.models.document import Document
+
+    (tmp_path / "Doc 503_ First Version.md").write_text(
+        "# Doc 503 First\n\nVersion: 1.0\n\nFirst body.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Doc 503_ Second Version.md").write_text(
+        "# Doc 503 Second\n\nVersion: 2.0\n\nSecond body.\n",
+        encoding="utf-8",
+    )
+
+    settings = get_settings()
+    original = settings.doctrine_path
+    settings.doctrine_path = str(tmp_path)
+    try:
+        stats = ingest_all_docs(db_session)
+    finally:
+        settings.doctrine_path = original
+
+    assert stats["errors"] == []
+    assert stats["created"] == 2
+    assert stats["superseded"] == 1
+
+    docs = db_session.query(Document).order_by(Document.filename).all()
+    assert len(docs) == 2
+    actives = [d for d in docs if d.status == "active"]
+    assert len(actives) == 1
+    assert actives[0].filename == "Doc 503_ Second Version.md"
+    assert actives[0].version == "2.0"
+
+
+def test_reconcile_duplicate_doc_number_supersedes_and_keeps_status(db_session, tmp_path):
+    """Fix 5: reconcile() must supersede the old owner, not clobber it to
+    "missing" in the ending filesystem sweep."""
+    from app.models.document import Document
+    from app.services.doc_ingestion import reconcile_doctrine
+
+    (tmp_path / "Doc 504_ 2024 Old Take.md").write_text(
+        "# Doc 504 Old\n\nVersion: 1.1\n\nOld body.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Doc 504_ 2025 New Take.md").write_text(
+        "# Doc 504 New\n\nVersion: 3.0\n\nNew body.\n",
+        encoding="utf-8",
+    )
+
+    settings = get_settings()
+    original = settings.doctrine_path
+    settings.doctrine_path = str(tmp_path)
+    try:
+        stats = reconcile_doctrine(db_session)
+    finally:
+        settings.doctrine_path = original
+
+    assert stats["errors"] == []
+    assert stats["created"] == 2
+    assert stats["superseded"] == 1
+    assert stats["missing"] == 0
+
+    docs = db_session.query(Document).order_by(Document.filename).all()
+    assert len(docs) == 2
+    actives = [d for d in docs if d.status == "active"]
+    assert len(actives) == 1
+    # "Doc 504_ 2025 New Take.md" sorts after "Doc 504_ 2024 Old Take.md",
+    # so it is processed last and wins the active slot.
+    assert actives[0].filename == "Doc 504_ 2025 New Take.md"
+    assert actives[0].version == "3.0"
+    # The superseded owner must NOT have been flipped to "missing".
+    assert {d.status for d in docs} == {"active", "superseded"}

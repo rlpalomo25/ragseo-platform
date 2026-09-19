@@ -11,7 +11,6 @@ interface ModalProps {
 
 export function Modal({ open, onClose, title, children }: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -44,10 +43,7 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
       aria-modal="true"
       aria-labelledby="modal-title"
     >
-      <div
-        ref={contentRef}
-        className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl overscroll-contain"
-      >
+      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl overscroll-contain">
         <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
           {title}
         </h2>

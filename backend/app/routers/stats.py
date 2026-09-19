@@ -1,6 +1,7 @@
 """Read-only dashboard aggregates: doctrine, embedding health, pipeline."""
+
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from statistics import mean
 
 from fastapi import APIRouter, Depends
@@ -51,7 +52,7 @@ class StatsResponse(BaseModel):
 def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 @router.get("/stats", response_model=StatsResponse)
@@ -61,12 +62,10 @@ def get_stats(user: User = Depends(get_current_user), db: DBSession = Depends(ge
     status_rows = db.query(Document.status, func.count(Document.id)).group_by(Document.status).all()
 
     chunks_total = db.query(func.count(DocChunk.id)).scalar() or 0
-    chunks_embedded = (
-        db.query(func.count(DocChunk.id)).filter(DocChunk.embedding.isnot(None)).scalar() or 0
-    )
+    chunks_embedded = db.query(func.count(DocChunk.id)).filter(DocChunk.embedding.isnot(None)).scalar() or 0
 
     jobs = db.query(AgentJob).all()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     created_times = [dt for j in jobs if (dt := _aware(j.created_at)) is not None]
 
     return StatsResponse(

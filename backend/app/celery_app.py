@@ -1,5 +1,6 @@
 from celery import Celery
 from celery.schedules import crontab
+
 from app.config import get_settings
 
 settings = get_settings()
@@ -31,9 +32,27 @@ celery_app.conf.update(
     broker_connection_max_retries=10,
     result_expires=60 * 60,
     beat_schedule={
+        # Registered task name is "doctrine.reconcile" (explicit name= in
+        # app/tasks.py); beat must reference that, not the module path — the
+        # old "app.tasks.reconcile_doctrine" never matched a registered task
+        # so the hourly reconcile silently never ran.
         "doctrine-reconcile-hourly": {
-            "task": "app.tasks.reconcile_doctrine",
+            "task": "doctrine.reconcile",
             "schedule": crontab(minute=0),  # hourly at :00
+        },
+        # Fix 8: prune_expired_sessions was implemented but never scheduled.
+        # Sessions expire after session_expiry_hours (24h), so every 6h is
+        # far more frequent than needed; picks up stragglers promptly anyway.
+        "session-prune": {
+            "task": "auth.prune_sessions",
+            "schedule": crontab(minute=30, hour="*/6"),
+        },
+        # Fix 5: reclaim AgentTasks stuck in `running` (worker lost / revoked
+        # on connection loss). Runs every 5 min; cheap scan on an indexed
+        # status column, only acting on tasks idle past the 30-min threshold.
+        "task-sweeper": {
+            "task": "pipeline.sweep_stale",
+            "schedule": crontab(minute="*/5"),
         },
     },
 )

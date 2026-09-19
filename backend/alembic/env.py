@@ -6,15 +6,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
+
 from alembic import context
-from app.database import Base
 from app.config import get_settings
-from app.models.user import User, Session  # noqa: F401
-from app.models.document import Document, DocReference  # noqa: F401
+from app.database import Base
 from app.models.agent_task import AgentTask  # noqa: F401
 from app.models.chunk import DocChunk  # noqa: F401
+from app.models.document import DocReference, Document  # noqa: F401
 from app.models.job import AgentJob, JobStage  # noqa: F401
+from app.models.user import Session, User  # noqa: F401
+from sqlalchemy import engine_from_config, pool
 
 config = context.config
 settings = get_settings()

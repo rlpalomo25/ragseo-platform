@@ -4,13 +4,18 @@ Combines pgvector cosine similarity with keyword matching using reciprocal
 rank fusion (RRF). Degrades to keyword-only search when embeddings are not
 configured or not yet computed.
 """
+
+import logging
 from dataclasses import dataclass
-from sqlalchemy import bindparam, text as sql_text
+
+from sqlalchemy import bindparam
+from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Session as DBSession
 
 from app.config import get_settings
 from app.services.embeddings import embed_query
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
 RRF_K = 60
@@ -18,18 +23,66 @@ RRF_K = 60
 # Common words that match everywhere and drown out distinctive terms in
 # keyword scoring. Vector search makes this moot once embeddings are enabled.
 STOPWORDS = frozenset(
-    "a an and are as at be been but by can do does for from has have how i "
-    "in into is it its of on or should so than that the their them then there "
-    "these they this to was were what when where which who why will with would you your"
-    .split()
+    [
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "but",
+        "by",
+        "can",
+        "do",
+        "does",
+        "for",
+        "from",
+        "has",
+        "have",
+        "how",
+        "i",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "or",
+        "should",
+        "so",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "to",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+    ]
 )
 
 
 def _extract_terms(query: str, limit: int = 8) -> list[str]:
-    terms = [
-        t for t in query.replace('"', " ").split()
-        if len(t) >= 3 and t.lower() not in STOPWORDS
-    ]
+    terms = [t for t in query.replace('"', " ").split() if len(t) >= 3 and t.lower() not in STOPWORDS]
     return terms[:limit]
 
 
@@ -55,8 +108,9 @@ class RetrievedChunk:
         }
 
 
-def _vector_search(db: DBSession, query_embedding: list[float], top_k: int,
-                   doc_numbers: list[str] | None) -> list[RetrievedChunk]:
+def _vector_search(
+    db: DBSession, query_embedding: list[float], top_k: int, doc_numbers: list[str] | None
+) -> list[RetrievedChunk]:
     filter_clause = ""
     # pgvector requires the bound parameter to be typed `vector`; raw text()
     # SQL gets no type info from SQLAlchemy, so pass the literal string + cast.
@@ -94,8 +148,9 @@ def _vector_search(db: DBSession, query_embedding: list[float], top_k: int,
     ]
 
 
-def _keyword_search(db: DBSession, query: str, top_k: int,
-                    doc_numbers: list[str] | None) -> list[RetrievedChunk]:
+def _keyword_search(
+    db: DBSession, query: str, top_k: int, doc_numbers: list[str] | None
+) -> list[RetrievedChunk]:
     terms = _extract_terms(query)
     if not terms:
         return []
@@ -133,7 +188,7 @@ def _keyword_search(db: DBSession, query: str, top_k: int,
     if doc_numbers:
         sql = sql.bindparams(bindparam("doc_numbers", expanding=True))
     rows = db.execute(sql, params).fetchall()
-    max_score = max((float(r.match_score) for r in rows), default=1.0) or 1.0
+    max_score = max((float(r.match_score) for r in rows), default=1.0)
     return [
         RetrievedChunk(
             doc_number=r.doc_number,
@@ -168,8 +223,9 @@ def _reciprocal_rank_fusion(result_sets: list[list[RetrievedChunk]], top_k: int)
     return fused
 
 
-def retrieve(db: DBSession, query: str, top_k: int | None = None,
-             doc_numbers: list[str] | None = None) -> list[RetrievedChunk]:
+def retrieve(
+    db: DBSession, query: str, top_k: int | None = None, doc_numbers: list[str] | None = None
+) -> list[RetrievedChunk]:
     """Retrieve the most relevant doctrine chunks for a query."""
     top_k = top_k or settings.retrieval_top_k
 
@@ -181,13 +237,13 @@ def retrieve(db: DBSession, query: str, top_k: int | None = None,
             result_sets.append(vector_results)
         except Exception as e:
             # Table/column may not exist yet (pre-migration DB); fall back.
-            print(f"Vector search unavailable, falling back to keyword: {e}")
+            logger.warning("Vector search unavailable, falling back to keyword: %s", e)
 
     try:
         result_sets.append(_keyword_search(db, query, top_k, doc_numbers))
     except Exception as e:
-        # e.g. non-Postgres dialect in tests; document-level ILIKE still works.
-        print(f"Chunk keyword search unavailable: {e}")
+        # e.g. non-Postgres dialect in tests; document-level keyword match still works.
+        logger.warning("Chunk keyword search unavailable: %s", e)
 
     if not result_sets or all(not rs for rs in result_sets):
         return []

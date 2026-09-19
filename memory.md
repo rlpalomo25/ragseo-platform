@@ -71,17 +71,70 @@ Now implemented + green:
   session; nothing fixed yet. `ingest_all_docs` (`doc_ingestion.py:113`) supersede-order quirk may
   supersede BOTH rows of a duplicate `doc_number` on timestamp ties — verify with a test.
 
+## Audit fixes, wave 2 — Fixes 5/7/8 COMPLETE (2026-09-18, in code, NOT deployed)
+- **Fix 7 (doctrine freshness)**: `tasks.py` now aliases the service import
+  (`reconcile_doctrine_service`) so the celery task body calls the real
+  `doc_ingestion.reconcile_doctrine(db)` — the old shadowed self-call TypeError
+  is gone. Beat entry renamed to the registered name `doctrine.reconcile`
+  (was `app.tasks.reconcile_doctrine`, which never matched).
+- **Fix 8 (login throttle)**: `auth.prune_sessions` now scheduled in
+  `celery_app.py` beat (`session-prune`, every 6h at :30).
+- **Fix 5 (LLM retry + idempotency)**:
+  - `advance_job` guard 1 (redelivery no-op) is now precise: "completed" is a
+    no-op only if the NEXT stage exists OR the auditor already moved the job
+    off `running`. The old guard also swallowed the window where the worker
+    died after `run_agent` committed "completed" but before advance landed →
+    job stuck in `running` forever; that window is now resumed.
+  - NEW `sweep_stale_tasks(db, stale_after=STALE_RUNNING_AFTER)` in
+    `orchestrator.py`: reclaims AgentTasks stuck in `running` past 30 min
+    (celery hard limit 900s), marks them failed, and routes via `advance_job`.
+    Scheduled as `pipeline.sweep_stale` (every 5 min).
+  - **Dupe doc_number quirk**: `uq_documents_doc_number` (migration 0006 +
+    model) was a WHOLE-TABLE unique constraint — makes the supersede flow
+    impossible (superseded rows legitimately keep their doc_number). Now a
+    PARTIAL unique index on ACTIVE rows only (`uq_documents_doc_number_active`,
+    dialect-branched in 0006, `Index(...sqlite_where/postgresql_where)` in
+    `Document.__table_args__`). `ingest_all_docs` + `reconcile_doctrine` now
+    supersede-and-flush BEFORE inserting the newer take; reconcile keeps its
+    `db_by_number` cache current mid-scan (a doc created earlier in the same
+    run must be visible to later files) and its missing-sweep no longer
+    clobbers fresh "superseded" status. reconcile stats gained missing
+    `chunks`/`embedding_failures` keys (`_rechunk_document` needs them).
+- Tests: **173 passed** (was 163). +3 `test_tasks.py` (task glue + beat
+  registration), +5 `test_orchestrator.py` (resume-windows + sweeper),
+  +2 `test_doc_ingestion.py` (dupe number supersede, reconcile status).
+  conftest gained an autouse `no_celery_broker` patch so the suite runs
+  WITHOUT Redis (`create_job → run_agent_task.delay` used to hit the real
+  broker). Test command: `DATABASE_URL=sqlite:///:memory: PYTHONPATH=/tmp/opencode/ragseo-deps python3 -m pytest` (psycopg2 not needed; 163 baseline reproduced).
+
+## Code cleanup for GitHub sharing per "C++ Coding Standards: 101 Rules" (2026-09-18, DONE except frontend)
+User asked: apply the 101-rule book (Sutter & Alexandrescu; summary at `https://micro-os-plus.github.io/develop/sutter-101/`) to the codebase for sharing/upload, and add a private paid-software license. Completed:
+- **ruff 0.16.8** at `/tmp/opencode/ruff/bin/ruff`; config `backend/pyproject.toml` `[tool.ruff]` (target py311, line-length 110, select E/W/F/I/B/UP/SIM/C4/RUF, ignore B008/C901, per-file `tests/*` B018/RUF012, double-quote format). pytest config stays in `backend/pytest.ini` (no `[tool.pytest.ini_options]` in pyproject — dual-config conflict).
+- `ruff check --fix` (205 fixed), `ruff format` (47 reformatted), then 25 manual fixes done this session: E712 `== True`→truthy (`auth.py:33`, `auth_service.py:93`), B904 `raise ... from e` (`ingest.py:204`, `jobs.py:154/170`), E741 ambiguous `l`→`lv`/`line` (`chunking.py`, `external_ingest.py`), RUF059 unused unpack (`auth.py` `_`; test `brand`→`_`), RUF046 `round(float(v))` (not `int(round())`), RUF001 en-dash→hyphen (`external_data.py` week label), RUF043 raw-string match (`test_agent_auditor.py`), B017 blind `Exception`→`pydantic.ValidationError` (`test_agent_writer.py`), F841 unused `by_name` (removed), E501 line-length on long prompt prose handled via file-level `# ruff: noqa: E501` in `app/services/agents/{auditor,router,writer}.py` (prompt text is deliberately long-form). Lint: **All checks passed**; format: **66 files already formatted**.
+- **`frontend/tsconfig.tsbuildinfo` removed from git** (`git rm --cached`); `.gitignore` now excludes it + `frontend/.eslintcache`.
+- **`LICENSE`** (root): PROPRIETARY SOFTWARE LICENSE AGREEMENT — paid/commercial, all-rights-reserved; no copy/modify/redistribute/reverse-engineer/sublicense; confidentiality; auto-termination on breach/non-payment; "AS IS"; note placeholders `[DATE]`/contact to fill before publishing. README gained a `## License` section.
+- Secrets scan across tracked files: clean; defaults in code are `changeme`/`change-this` placeholders (`.env` gitignored).
+- **Tests still green: 173 passed** (after all reformat/refactors).
+- Frontend `tsc --noEmit` + `next lint`: NOT run — this env has no Node/npm and `node_modules` is absent. Run locally before pushing.
+
 ## Next Move
-1. **Audit fixes 1–4 + 6 DONE (2026-09-15, in code, NOT deployed/committed)**: `/docs/[docId]` React-18 fix; delete-endpoint baked-file hard-guard (+hash-row protection); `retrieval.py` `expanding=True` bind + `lower()/LIKE` (no ILIKE); Klean brand normalized `klean_gutter`→`kleangutter`; **Fix 6 zip-decompression budgets** (`ZipBudgetError`/`_ZipBudget`/`MAX_ZIP_*`, `spend_entry(len(payload))`). **163 backend tests pass; frontend tsc+lint clean.** Session notes: `CONTEXT-2026-09-15.md`.
-2. **Fix 5, 7, 8 in working tree but UNVERIFIED / partly broken — review before deploy**:
-   - Fix 5 (LLM retry + job idempotency): code present (retry/timeout in `llm_client.py`, idempotent `advance_job`, `uq_job_stages_job_sequence`) — but the stale-`running` sweeper is still missing.
-   - Fix 7 (doctrine freshness): **BROKEN — work started, not fixed** — `tasks.py:50` `reconcile_doctrine` shadows the `doc_ingestion`
-     import (line 54 self-calls → TypeError); beat entry `celery_app.py:35` points at `app.tasks.reconcile_doctrine` ≠ registered
-     `doctrine.reconcile`. Migration `0006` (unique `doc_number`, newest-wins supersede) + `doc_ingestion.reconcile_doctrine()` + `last_updated` stamping look sound.
-   - Fix 8 (login throttle + session pruning): code present (auth.py backoff, user fields, migration `0007`, `prune_expired_sessions`) — beat never schedules `prune_sessions_task`.
-3. **Deploy fixes to VPS**: commit + `git push origin main`, VPS `git pull origin main && docker compose -f docker-compose.prod.yml build backend frontend && docker compose -f docker-compose.prod.yml up -d` (per `prompts/03-push-redeploy.md`).
-4. Weekly routine: use WEEKLY_GSC_IMPORT_PROMPT.md + prompts/01-04 (website upload primary).
-5. Optional future: Doc 307 dedicated SERP agent via `app/tasks.py:AGENT_FUNCTIONS`.
+1. **All audit fixes 1–8 DONE (wave 1 committed as `025f44d`, wave 2 this session uncommitted); cleanup + LICENSE uncommitted; NOT deployed**: before push, run locally (no Node here): `cd frontend && npx tsc --noEmit && npm run lint`. Fill LICENSE placeholders (`[DATE]`, licensing contact). Then commit + `git push origin main`, VPS `git pull origin main && docker compose -f docker-compose.prod.yml build backend frontend && docker compose -f docker-compose.prod.yml up -d` (per `prompts/03-push-redeploy.md`). Migrations 0005/0006/0007 run on backend boot (`alembic upgrade head` in entrypoint).
+2. Weekly routine: use WEEKLY_GSC_IMPORT_PROMPT.md + prompts/01-04 (website upload primary).
+3. Optional future: Doc 307 dedicated SERP agent via `app/tasks.py:AGENT_FUNCTIONS`.
+
+## Open items captured this session (2026-09-18)
+- **wave 2 changes need test-command note**: suite is now Redis-free via conftest autouse
+  `no_celery_broker` (monkeypatches `run_agent_task.delay`). Run with
+  `DATABASE_URL=sqlite:///:memory: PYTHONPATH=/tmp/opencode/ragseo-deps python3 -m pytest`
+  (psycopg2 not needed). Baseline reproduced: 163 → **173 passed**.
+- **Token/no-secrets hygiene**: repo is private but `.env` values are in `.gitignore`;
+  do NOT commit local `.env`. VPS prod values: `/tmp/opencode/server.env`.
+- Deploy SOP migrated from rsync → git (private `github.com/rlpalomo25/ragseo-platform`,
+  VPS read-only deploy key). Never push dev `.env` (rsync-era clobber incident documented).
+- **Uncommitted working tree (NOT pushed)**: fix wave 2 (orchestrator sweeper/resume window,
+  tasks aliases, beat schedule, doc_number partial unique index), ruff cleanup, LICENSE,
+  README License section, `.gitignore` update, new `test_tasks.py` + `backend/pyproject.toml`.
+  Commit + deploy when authorized (`025f44d` = wave 1 only).
 
 ## Relevant Files
 - Importer: `backend/app/services/external_ingest.py` · service: `backend/app/services/external_data.py` · models: `backend/app/models/external.py` · migration: `backend/alembic/versions/0004_external_data.py` · router: `backend/app/routers/ingest.py` · CLI: `backend/scripts/import_external.py` · agents: `backend/app/services/agents/{writer,router}.py`

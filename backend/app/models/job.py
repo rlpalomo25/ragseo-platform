@@ -1,8 +1,17 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 from sqlalchemy import (
-    Column, String, Text, Integer, DateTime, ForeignKey, Uuid, UniqueConstraint,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
 )
+
 from app.database import Base
 
 
@@ -13,6 +22,7 @@ class AgentJob(Base):
                  running -> failed (audit revisions exhausted / stage error)
                  any active status -> cancelled
     """
+
     __tablename__ = "agent_jobs"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -25,17 +35,19 @@ class AgentJob(Base):
     max_revisions = Column(Integer, nullable=False, default=2)
     notes = Column(Text)
     created_by = Column(Uuid(as_uuid=True), ForeignKey("users.id"), nullable=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
-                        onupdate=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
+    updated_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
 
 
 class JobStage(Base):
     """One pipeline stage of a job, linked to the agent task executing it."""
+
     __tablename__ = "job_stages"
 
     __table_args__ = (
-        # Idempotency backstop (Fix 5B): one sequence per job. A crashe /
+        # Idempotency backstop (Fix 5B): one sequence per job. A crashed /
         # redelivered worker task that re-runs _dispatch_stage for the same
         # (job, sequence) cannot silently create a duplicate stage row — the
         # INSERT fails instead, so the pipeline stays on the original chain.
@@ -43,11 +55,12 @@ class JobStage(Base):
     )
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    job_id = Column(Uuid(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="CASCADE"),
-                    nullable=False, index=True)
+    job_id = Column(
+        Uuid(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     sequence = Column(Integer, nullable=False)
     agent_type = Column(String(50), nullable=False)
     task_id = Column(Uuid(as_uuid=True), ForeignKey("agent_tasks.id"), nullable=True)
     status = Column(String(20), nullable=False, default="pending")
     feedback = Column(Text)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

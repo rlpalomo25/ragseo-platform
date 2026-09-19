@@ -1,6 +1,6 @@
-import sys
-import os
 import argparse
+import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,19 +23,19 @@ def main():
         results = import_external_folder(data_dir, db, force=args.force)
         for r in results:
             status = r["status"]
-            suffix = {"imported": f" ({r['rows']} rows)",
-                      "skipped": " (already imported)"}.get(status, "")
+            suffix = {"imported": f" ({r['rows']} rows)", "skipped": " (already imported)"}.get(status, "")
             err = f" - {r['error']}" if r.get("error") else ""
             print(f"[{status.upper()}] {r['filename']}{suffix}{err}")
         by_status = {}
         for r in results:
             by_status[r["status"]] = by_status.get(r["status"], 0) + 1
-        print(f"\nTotal: {len(results)} files -> " +
-              ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items())))
+        print(
+            f"\nTotal: {len(results)} files -> "
+            + ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items()))
+        )
         learning = snapshot_publications(db)
         print(
-            f"Learning loop: {learning.get('snapshots', 0)} snapshots, "
-            f"{learning.get('signals', 0)} signals"
+            f"Learning loop: {learning.get('snapshots', 0)} snapshots, {learning.get('signals', 0)} signals"
         )
         if by_status.get("error"):
             sys.exit(1)

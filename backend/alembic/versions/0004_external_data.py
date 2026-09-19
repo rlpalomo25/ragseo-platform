@@ -4,8 +4,9 @@ Revision ID: 0004_external_data
 Revises: 0003_local_embeddings
 Create Date: 2026-09-10
 """
-from alembic import op
+
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import Uuid
 
 revision = "0004_external_data"
@@ -37,8 +38,12 @@ def upgrade() -> None:
     op.create_table(
         "search_console_dims",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("dim_type", sa.String(20), nullable=False),
         sa.Column("key", sa.String(500), nullable=False),
@@ -53,8 +58,12 @@ def upgrade() -> None:
     op.create_table(
         "search_console_daily",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("day", sa.Date(), nullable=False),
         sa.Column("clicks", sa.Integer(), nullable=False, server_default="0"),
@@ -67,8 +76,12 @@ def upgrade() -> None:
     op.create_table(
         "ai_overview_impressions",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("dim_type", sa.String(20), nullable=False),
         sa.Column("key", sa.String(255), nullable=True),
@@ -80,8 +93,12 @@ def upgrade() -> None:
     op.create_table(
         "keyword_estimates",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("keyword", sa.String(500), nullable=False),
         sa.Column("volume", sa.Integer(), nullable=True),
@@ -97,8 +114,12 @@ def upgrade() -> None:
     op.create_table(
         "backlinks",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("source_title", sa.Text(), nullable=True),
         sa.Column("source_url", sa.Text(), nullable=True),
@@ -115,8 +136,12 @@ def upgrade() -> None:
     op.create_table(
         "top_pages",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("url", sa.Text(), nullable=True),
         sa.Column("title", sa.Text(), nullable=True),
@@ -128,8 +153,12 @@ def upgrade() -> None:
     op.create_table(
         "call_tracking",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("name", sa.String(255), nullable=True),
         sa.Column("customer_number", sa.String(50), nullable=True),
@@ -150,8 +179,12 @@ def upgrade() -> None:
     op.create_table(
         "lead_summaries",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("week_start", sa.Date(), nullable=True),
         sa.Column("week_end", sa.Date(), nullable=True),
@@ -163,8 +196,12 @@ def upgrade() -> None:
     op.create_table(
         "ga4_events",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("event_name", sa.String(100), nullable=False),
         sa.Column("event_count", sa.Integer(), nullable=False, server_default="0"),
@@ -179,8 +216,12 @@ def upgrade() -> None:
     op.create_table(
         "domain_reports",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("report_type", sa.String(20), nullable=False),
         sa.Column("source_file", sa.String(500), nullable=True),
@@ -192,8 +233,12 @@ def upgrade() -> None:
     op.create_table(
         "domain_metrics",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("export_id", Uuid(as_uuid=True), sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
-                  nullable=False),
+        sa.Column(
+            "export_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("external_exports.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("domain", sa.String(255), nullable=False),
         sa.Column("metric", sa.String(50), nullable=False),
         sa.Column("value", sa.Float(), nullable=True),

@@ -1,10 +1,13 @@
+# ruff: noqa: E501  (agent prompt prose is deliberately long-form)
 import json
+
 from sqlalchemy.orm import Session as DBSession
-from app.services.llm_client import call_llm
+
 from app.services.agent_runner import build_retrieval_context
 from app.services.doctrine import detect_brand
 from app.services.external_data import build_market_context
 from app.services.learning_loop import build_learning_context
+from app.services.llm_client import call_llm
 
 ROUTER_SYSTEM_PROMPT = """You are the RAGSEO Router Agent. Your job is to classify an incoming content request and route it to the correct doctrine documents and downstream agents.
 
@@ -62,10 +65,12 @@ def run_router(db: DBSession, input_data: dict) -> dict:
 
     context, sources = build_retrieval_context(db, request_text)
 
-    source_lines = "\n".join(
-        f"- Doc {s['doc_number']}: {s['doc_title']} | {s['heading_path'] or '(body)'}"
-        for s in sources
-    ) or "(no doctrine chunks retrieved)"
+    source_lines = (
+        "\n".join(
+            f"- Doc {s['doc_number']}: {s['doc_title']} | {s['heading_path'] or '(body)'}" for s in sources
+        )
+        or "(no doctrine chunks retrieved)"
+    )
 
     pre_brand = detect_brand(request_text)
     market_context, _ = build_market_context(db, pre_brand) if pre_brand else ("", [])
@@ -80,9 +85,9 @@ def run_router(db: DBSession, input_data: dict) -> dict:
 ## Content Request
 {request_text}
 
-{f"## Brand Performance Context" + chr(10) + market_context if market_context else ""}
+{"## Brand Performance Context" + chr(10) + market_context if market_context else ""}
 
-{f"## Performance Memory of Published Content" + chr(10) + learning_context if learning_context else ""}
+{"## Performance Memory of Published Content" + chr(10) + learning_context if learning_context else ""}
 
 Classify this request and return your JSON routing decision. Base applicable_docs on the retrieved excerpts plus your own doctrine knowledge."""
 

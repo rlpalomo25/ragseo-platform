@@ -16,7 +16,7 @@ Memory" block for the writer/router, returned under a SEPARATE
 """
 
 import logging
-from datetime import UTC, date, datetime
+from datetime import date
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -32,6 +32,7 @@ from app.models.external import (
 )
 from app.models.job import AgentJob
 from app.models.learning import ContentPerformanceSnapshot, ContentPublication, LearningSignal
+from app.services.external_data import latest_export_ids
 from app.services.external_ingest import BRAND_DOMAINS, DOMAIN_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -98,25 +99,6 @@ def _canonical_domain(url: str) -> str | None:
     return DOMAIN_ALIASES.get(host) or host
 
 
-def _latest_export_ids(db: DBSession, domain: str) -> dict[str, UUID]:
-    """Latest external_exports.id per source_type for a domain.
-
-    Same policy as ``external_data.build_market_context``: "latest" is decided
-    by (imported_at, id) so overlapping weekly imports collapse to one snapshot
-    per source type. Reimplemented here rather than importing the private
-    helper from ``external_data``.
-    """
-    best: dict[str, tuple[datetime, UUID]] = {}
-    for row in db.query(ExternalExport).filter(ExternalExport.domain == domain).all():
-        ts = row.imported_at if isinstance(row.imported_at, datetime) else datetime.min
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
-        key = (ts, row.id)
-        if row.source_type not in best or key > best[row.source_type]:
-            best[row.source_type] = key
-    return {source_type: export_id for source_type, (_, export_id) in best.items()}
-
-
 def _newest_export(db: DBSession, domain: str) -> ExternalExport | None:
     """The newest export row for a domain (cycle anchor for snapshots)."""
     return (
@@ -161,7 +143,7 @@ def _percent_change(now, prev) -> float | None:
 
 def _gather_metrics(db: DBSession, pub: ContentPublication, domain: str) -> dict:
     """Pull this cycle's per-URL metrics for a publication from the latest exports."""
-    latest = _latest_export_ids(db, domain)
+    latest = latest_export_ids(db, domain)
     metrics: dict = {
         "position": None,
         "clicks": 0,
@@ -402,6 +384,7 @@ def snapshot_publications(db: DBSession, force: bool = False) -> dict:
         try:
             db.commit()
         except Exception:
+            logger.exception("Failed to persist snapshot for %s", pub.url)
             db.rollback()
             continue
         stats["snapshots"] += 1
@@ -466,8 +449,7 @@ def build_learning_context(db: DBSession, brand: str, topic: str = "") -> tuple[
         kw = f' (keyword "{pub.target_keyword}")' if pub.target_keyword else ""
         pub_date = f"published {pub.publish_date}" if pub.publish_date else "published?"
         lines.append(
-            f"  - [{snap.period_to or 'latest'}] {pub.publish_url}{kw} {pub_date}"
-            f" — {', '.join(parts)}"
+            f"  - [{snap.period_to or 'latest'}] {pub.publish_url}{kw} {pub_date} — {', '.join(parts)}"
         )
 
     context = "\n".join(lines)

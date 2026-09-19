@@ -1,14 +1,15 @@
 import logging
 from uuid import UUID
+
 from app.celery_app import celery_app
-from app.database import SessionLocal
+from app.database import session_scope
 from app.services.agent_runner import run_agent
-from app.services.orchestrator import advance_job
+from app.services.agents.auditor import run_auditor
 from app.services.agents.router import run_router
 from app.services.agents.writer import run_writer
-from app.services.agents.auditor import run_auditor
-from app.services.doc_ingestion import ingest_all_docs, reconcile_doctrine
 from app.services.auth_service import prune_expired_sessions
+from app.services.doc_ingestion import reconcile_doctrine as reconcile_doctrine_service
+from app.services.orchestrator import advance_job, sweep_stale_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +22,7 @@ AGENT_FUNCTIONS = {
 
 @celery_app.task(name="agents.run_agent_task", bind=True)
 def run_agent_task(self, task_id: str, agent_type: str, input_data: dict):
-    db = SessionLocal()
-    try:
+    with session_scope() as db:
         agent_fn = AGENT_FUNCTIONS.get(agent_type)
         if not agent_fn:
             raise ValueError(f"Unknown agent type: {agent_type}")
@@ -42,35 +42,43 @@ def run_agent_task(self, task_id: str, agent_type: str, input_data: dict):
             logger.exception("Orchestration failed after task %s (%s)", task_id, agent_type)
 
         return {"task_id": str(task.id), "status": task.status}
-    finally:
-        db.close()
 
 
 @celery_app.task(name="doctrine.reconcile", bind=True)
 def reconcile_doctrine(self):
     """Scheduled task to reconcile doctrine DB with filesystem."""
-    db = SessionLocal()
-    try:
-        stats = reconcile_doctrine(db)
+    with session_scope() as db:
+        try:
+            stats = reconcile_doctrine_service(db)
+        except Exception:
+            logger.exception("Doctrine reconciliation failed")
+            raise
         logger.info("Doctrine reconciliation completed: %s", stats)
         return stats
-    except Exception:
-        logger.exception("Doctrine reconciliation failed")
-        raise
-    finally:
-        db.close()
 
 
 @celery_app.task(name="auth.prune_sessions", bind=True)
 def prune_sessions_task(self):
     """Scheduled task to clean up expired sessions."""
-    db = SessionLocal()
-    try:
-        count = prune_expired_sessions(db)
+    with session_scope() as db:
+        try:
+            count = prune_expired_sessions(db)
+        except Exception:
+            logger.exception("Session pruning failed")
+            raise
         logger.info("Session pruning completed: %d expired sessions deleted", count)
         return {"deleted": count}
-    except Exception:
-        logger.exception("Session pruning failed")
-        raise
-    finally:
-        db.close()
+
+
+@celery_app.task(name="pipeline.sweep_stale", bind=True)
+def sweep_stale_tasks_task(self):
+    """Scheduled task to reclaim AgentTasks stuck in ``running`` (Fix 5)."""
+    with session_scope() as db:
+        try:
+            stats = sweep_stale_tasks(db)
+        except Exception:
+            logger.exception("Sweep of stale running tasks failed")
+            raise
+        if stats["stale_tasks"]:
+            logger.info("Sweep reclaimed %d stale running tasks", stats["stale_tasks"])
+        return stats

@@ -6,19 +6,17 @@ hardcoded in code. Every load produces a provenance stamp (doc number + live
 version) per the Doc 329/C17 rule that agents must record which doc versions
 they ran against.
 """
+
 from sqlalchemy.orm import Session as DBSession
-from app.models.document import Document
+
 from app.config import get_settings
+from app.models.document import Document
 
 settings = get_settings()
 
 
 def get_doc(db: DBSession, doc_number: str) -> Document | None:
-    return (
-        db.query(Document)
-        .filter(Document.doc_number == doc_number, Document.status == "active")
-        .first()
-    )
+    return db.query(Document).filter(Document.doc_number == doc_number, Document.status == "active").first()
 
 
 def stamp_provenance(db: DBSession, doc_numbers: list[str]) -> list[dict]:
@@ -32,12 +30,14 @@ def stamp_provenance(db: DBSession, doc_numbers: list[str]) -> list[dict]:
         doc = by_number.get(num)
         if not doc:
             continue
-        stamps.append({
-            "doc_number": doc.doc_number,
-            "title": doc.title,
-            "version": doc.version,
-            "filename": doc.filename,
-        })
+        stamps.append(
+            {
+                "doc_number": doc.doc_number,
+                "title": doc.title,
+                "version": doc.version,
+                "filename": doc.filename,
+            }
+        )
     return stamps
 
 
@@ -83,8 +83,12 @@ def detect_brand(text: str) -> str:
     lower = text.lower()
     if "mastershield" in lower or "master shield" in lower:
         return "mastershield"
-    if ("klean gutter" in lower or "kleangutter" in lower
-            or "klean-gutter" in lower or "klean_gutter" in lower):
+    if (
+        "klean gutter" in lower
+        or "kleangutter" in lower
+        or "klean-gutter" in lower
+        or "klean_gutter" in lower
+    ):
         return "kleangutter"
     if "mmgg" in lower or "michael & son" in lower:
         return "mmgg"

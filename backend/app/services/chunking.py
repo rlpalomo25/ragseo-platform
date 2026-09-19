@@ -6,6 +6,7 @@ section it came from. Chunks are heading-aligned, never split mid-paragraph,
 and each carries a provenance header (doc number, title, heading path) so the
 passage is self-describing outside its page.
 """
+
 import hashlib
 import re
 
@@ -40,10 +41,10 @@ def _split_markdown_sections(content: str) -> list[tuple[list[str], str]]:
         # the provenance header — so they don't repeat inside heading paths.
         if level > 1:
             path_by_level[level] = title
-            for deeper in [l for l in path_by_level if l > level]:
+            for deeper in [lv for lv in path_by_level if lv > level]:
                 del path_by_level[deeper]
-        heading_path = [path_by_level[l] for l in sorted(path_by_level)]
-        sections.append((heading_path, content[match.start():end].strip()))
+        heading_path = [path_by_level[lv] for lv in sorted(path_by_level)]
+        sections.append((heading_path, content[match.start() : end].strip()))
 
     return sections
 
@@ -101,7 +102,7 @@ def chunk_document(
             first_line = section_text.split("\n", 1)[0]
             if first_line.startswith("#"):
                 heading_line = first_line + "\n\n"
-                body = section_text[len(heading_line):]
+                body = section_text[len(heading_line) :]
             else:
                 body = section_text
             pieces = [heading_line + p for p in _split_long_section(body, max_chars)]
@@ -117,11 +118,13 @@ def chunk_document(
                 header += " > " + " > ".join(heading_path)
             header += "]"
 
-            chunks.append({
-                "chunk_index": len(chunks),
-                "heading_path": " > ".join(heading_path) if heading_path else "",
-                "content": f"{header}\n\n{body}",
-            })
+            chunks.append(
+                {
+                    "chunk_index": len(chunks),
+                    "heading_path": " > ".join(heading_path) if heading_path else "",
+                    "content": f"{header}\n\n{body}",
+                }
+            )
 
     return chunks
 

@@ -1,6 +1,5 @@
 import pytest
-from app.services.chunking import chunk_document, chunk_content_hash
-
+from app.services.chunking import chunk_content_hash, chunk_document
 
 SAMPLE = """# Doc 999: Test Document
 

@@ -10,16 +10,16 @@ When no provider is configured (``EMBEDDING_PROVIDER=none``) the service
 degrades gracefully: ingestion still stores chunks, they simply have no
 vectors, and retrieval falls back to keyword-only search.
 """
+
 import logging
 import time
 
 import httpx
+
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
-
-VOYAGE_API_URL = "https://api.voyageai.com/api/v1/embeddings"
 
 # nomic-embed-text follows the MTEB task-prefix convention; applying it
 # distinguishes documents from queries and improves retrieval quality.
@@ -27,6 +27,13 @@ _TASK_PREFIXES = {"document": "search_document: ", "query": "search_query: "}
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = 1.0
+
+# nomic-embed-text reports context overflow with this body substring.
+_OVERFLOW_ERROR = "exceeds the context length"
+# Progressive windows to retry with when ollama reports an overflow; the token
+# budget of dense table/number content varies (measured ~2.9 chars/token), so a
+# single char-based cap is not reliable.
+_SHRINK_STEPS = (6144, 5120, 4096, 3072, 2048, 1536, 1024)
 
 
 class EmbeddingError(Exception):
@@ -50,12 +57,12 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            if e.response is not None and e.response.status_code not in (429,) and e.response.status_code < 500:
+            if e.response is not None and e.response.status_code != 429 and e.response.status_code < 500:
                 raise  # non-retryable client error
             if (
                 e.response is not None
                 and e.response.status_code == 500
-                and "exceeds the context length" in e.response.text
+                and _OVERFLOW_ERROR in e.response.text
             ):
                 raise  # Ollama input overflow: not transient, caller shrinks the prompt
             last_error = e
@@ -63,7 +70,7 @@ def _post_json(url: str, headers: dict, payload: dict) -> dict:
             last_error = e
         if attempt == _MAX_RETRIES - 1:
             break
-        wait = _RETRY_BACKOFF * (2 ** attempt)
+        wait = _RETRY_BACKOFF * (2**attempt)
         logger.warning("Embedding POST failed (attempt %s); retrying in %.1fs", attempt + 1, wait)
         time.sleep(wait)
     raise last_error or EmbeddingError("Embedding POST failed")
@@ -73,10 +80,10 @@ def _embed_voyage(texts: list[str], input_type: str) -> list[list[float]]:
     all_vectors: list[list[float]] = []
     batch_size = max(1, settings.embedding_batch_size)
     for start in range(0, len(texts), batch_size):
-        batch = texts[start:start + batch_size]
+        batch = texts[start : start + batch_size]
         try:
             data = _post_json(
-                VOYAGE_API_URL,
+                settings.voyage_api_url,
                 headers={
                     "Authorization": f"Bearer {settings.voyage_api_key}",
                     "Content-Type": "application/json",
@@ -111,13 +118,6 @@ def _truncate_to_context(text: str) -> str:
     if max_chars <= 0:
         return text
     return text[:max_chars]
-
-
-_OVERFLOW_ERROR = "exceeds the context length"
-# Progressive windows to retry with when ollama reports an overflow; the token
-# budget of dense table/number content varies (measured ~2.9 chars/token), so a
-# single char-based cap is not reliable.
-_SHRINK_STEPS = (6144, 5120, 4096, 3072, 2048, 1536, 1024)
 
 
 def _embed_ollama(text: str, input_type: str) -> list[float]:

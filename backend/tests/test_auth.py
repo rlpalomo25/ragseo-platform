@@ -1,4 +1,7 @@
+from datetime import UTC
+
 import pytest
+
 from tests.conftest import login
 
 
@@ -49,12 +52,13 @@ def test_raw_unsigned_token_rejected(client, test_user, db_session):
 
 
 def test_expired_session_rejected(client, test_user, db_session):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from app.models.user import Session as UserSession
 
     login(client, "testwriter", "secret123")
     session_row = db_session.query(UserSession).first()
-    session_row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    session_row.expires_at = datetime.now(UTC) - timedelta(hours=1)
     db_session.commit()
     assert client.get("/api/auth/me").status_code == 401
 

@@ -1,7 +1,6 @@
+import app.services.embeddings as emb
 import httpx
 import pytest
-
-import app.services.embeddings as emb
 from app.config import get_settings
 from app.services.embeddings import EmbeddingError, embed_query, embed_texts
 
@@ -59,9 +58,11 @@ def voyage_ok(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None):
         captured["url"] = url
         captured["payload"] = json
-        return FakeResponse(json_data={
-            "data": [{"index": i, "embedding": [0.1] * DIM} for i in range(len(json["input"]))],
-        })
+        return FakeResponse(
+            json_data={
+                "data": [{"index": i, "embedding": [0.1] * DIM} for i in range(len(json["input"]))],
+            }
+        )
 
     monkeypatch.setattr(httpx, "post", fake_post)
     return captured
@@ -100,7 +101,9 @@ def test_ollama_shrinks_oversized_input_on_overflow(monkeypatch):
     def fake_post(url, headers=None, json=None, timeout=None):
         calls.append(json["prompt"])
         if len(json["prompt"]) > len("search_document: ") + 6144:
-            return FakeResponse(status_code=500, text='{"error":"the input length exceeds the context length"}')
+            return FakeResponse(
+                status_code=500, text='{"error":"the input length exceeds the context length"}'
+            )
         return FakeResponse(json_data={"embedding": [0.1] * DIM})
 
     monkeypatch.setattr(httpx, "post", fake_post)
@@ -117,9 +120,14 @@ def test_ollama_raises_when_all_windows_overflow(monkeypatch):
     monkeypatch.setattr(settings, "embedding_provider", "ollama")
     monkeypatch.setattr(settings, "embedding_model", "nomic-embed-text")
     monkeypatch.setattr(settings, "embedding_dimensions", DIM)
-    monkeypatch.setattr(httpx, "post", lambda url, headers=None, json=None, timeout=None: FakeResponse(
-        status_code=500, text='{"error":"the input length exceeds the context length"}',
-    ))
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: FakeResponse(
+            status_code=500,
+            text='{"error":"the input length exceeds the context length"}',
+        ),
+    )
     with pytest.raises(EmbeddingError, match="overflows context"):
         embed_texts(["y" * 5_000])
 
@@ -139,9 +147,13 @@ def test_ollama_non_nomic_model_no_prefix(monkeypatch):
     monkeypatch.setattr(settings, "embedding_provider", "ollama")
     monkeypatch.setattr(settings, "embedding_model", "bge-base-en-v1.5")
     monkeypatch.setattr(settings, "embedding_dimensions", DIM)
-    monkeypatch.setattr(httpx, "post", lambda url, headers=None, json=None, timeout=None: FakeResponse(
-        json_data={"embedding": [0.1] * DIM},
-    ))
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: FakeResponse(
+            json_data={"embedding": [0.1] * DIM},
+        ),
+    )
     vectors = embed_texts(["plain text"])
     assert vectors == [[0.1] * DIM]
 
@@ -150,9 +162,13 @@ def test_ollama_dimension_mismatch_raises(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "embedding_provider", "ollama")
     monkeypatch.setattr(settings, "embedding_dimensions", DIM)
-    monkeypatch.setattr(httpx, "post", lambda url, headers=None, json=None, timeout=None: FakeResponse(
-        json_data={"embedding": [0.2] * 512},
-    ))
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: FakeResponse(
+            json_data={"embedding": [0.2] * 512},
+        ),
+    )
     with pytest.raises(EmbeddingError, match="dimension"):
         embed_texts(["x"])
 
@@ -192,9 +208,14 @@ def test_voyage_non_retryable_client_error(monkeypatch):
     monkeypatch.setattr(settings, "embedding_provider", "voyage")
     monkeypatch.setattr(settings, "voyage_api_key", "bad-key")
     monkeypatch.setattr(settings, "embedding_dimensions", DIM)
-    monkeypatch.setattr(httpx, "post", lambda url, headers=None, json=None, timeout=None: FakeResponse(
-        status_code=401, text="unauthorized",
-    ))
+    monkeypatch.setattr(
+        httpx,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: FakeResponse(
+            status_code=401,
+            text="unauthorized",
+        ),
+    )
     with pytest.raises(EmbeddingError, match="401"):
         embed_texts(["a"])
 

@@ -1,26 +1,14 @@
 import traceback
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
+
 from sqlalchemy.orm import Session as DBSession
-from app.models.agent_task import AgentTask
-from app.models.document import Document
+
 from app.config import get_settings
+from app.models.agent_task import AgentTask
 from app.services.retrieval import retrieve
 
 settings = get_settings()
-
-
-def get_doctrine_context(db: DBSession, doc_numbers: list[str] | None = None) -> str:
-    """Full-document context for explicitly named docs (agent handoffs)."""
-    if doc_numbers:
-        docs = db.query(Document).filter(Document.doc_number.in_(doc_numbers)).all()
-    else:
-        docs = db.query(Document).filter(Document.status == "active").all()
-
-    parts = []
-    for doc in docs:
-        parts.append(f"--- Doc {doc.doc_number}: {doc.title} ---\n{doc.content}\n")
-    return "\n".join(parts)
 
 
 def build_retrieval_context(
@@ -53,8 +41,10 @@ def build_retrieval_context(
             content = chunk.content
 
         version_note = f" (v{chunk.version})" if chunk.version else ""
-        parts.append(f"--- Doc {chunk.doc_number}{version_note}: {chunk.doc_title}"
-                     f" | Section: {chunk.heading_path or '(document body)'} ---\n{content}\n")
+        parts.append(
+            f"--- Doc {chunk.doc_number}{version_note}: {chunk.doc_title}"
+            f" | Section: {chunk.heading_path or '(document body)'} ---\n{content}\n"
+        )
         sources.append(source)
         used += len(content)
 
@@ -93,18 +83,18 @@ def run_agent(
         raise ValueError(f"Task {task_id} not found")
 
     task.status = "running"
-    task.started_at = datetime.now(timezone.utc)
+    task.started_at = datetime.now(UTC)
     db.commit()
 
     try:
         result = agent_fn(db, input_data)
         task.status = "completed"
         task.output_data = result
-        task.completed_at = datetime.now(timezone.utc)
+        task.completed_at = datetime.now(UTC)
     except Exception as e:
         task.status = "failed"
         task.error_message = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-        task.completed_at = datetime.now(timezone.utc)
+        task.completed_at = datetime.now(UTC)
 
     db.commit()
     db.refresh(task)

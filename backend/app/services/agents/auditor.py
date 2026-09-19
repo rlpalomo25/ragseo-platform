@@ -1,3 +1,4 @@
+# ruff: noqa: E501  (agent prompt prose is deliberately long-form)
 """RAGSEO Auditor Agent.
 
 Audits a content draft against the Doc 328 auditor rubric (loaded live from
@@ -6,21 +7,23 @@ structured verdict — pass / pass_with_notes / fail — with per-check findings
 A critical-severity failure always forces an overall FAIL, mirroring Doc 328's
 critical-fail rule.
 """
-from uuid import UUID
+
 from typing import Literal
+from uuid import UUID
+
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy.orm import Session as DBSession
 
-from app.models.agent_task import AgentTask
 from app.config import get_settings
-from app.services.llm_client import call_llm
+from app.models.agent_task import AgentTask
+from app.services.agent_runner import build_retrieval_context
+from app.services.agents.llm_output import extract_json
 from app.services.doctrine import (
     BRAND_CONFIG,
     detect_brand,
     load_governing_docs,
 )
-from app.services.agent_runner import build_retrieval_context
-from app.services.agents.llm_output import extract_json
+from app.services.llm_client import call_llm
 
 AUDITOR_SYSTEM_PROMPT = """You are the RAGSEO Auditor Agent. You audit content drafts against the Doc 328 rubric provided to you. You are strict, evidence-based, and you never invent checks that are not in the rubric or the supplementary doctrine.
 
@@ -137,7 +140,9 @@ def run_auditor(db: DBSession, input_data: dict) -> dict:
     governing_context, provenance = load_governing_docs(db, governing_nums)
 
     supplement_context, sources = build_retrieval_context(
-        db, f"audit checks {input_data.get('content_type') or ''} {brand}".strip(), top_k=6,
+        db,
+        f"audit checks {input_data.get('content_type') or ''} {brand}".strip(),
+        top_k=6,
     )
     loaded_numbers = {p["doc_number"] for p in provenance}
     extra_sources = [s for s in sources if s["doc_number"] not in loaded_numbers]
@@ -169,9 +174,8 @@ Run the audit and return your JSON verdict."""
     if parsed is None:
         response = call_llm(
             system_prompt=AUDITOR_SYSTEM_PROMPT,
-            user_message=user_message
-            + "\n\nYour previous reply did not contain a parseable JSON object. "
-              "Reply with ONLY the JSON verdict object and nothing else.",
+            user_message=user_message + "\n\nYour previous reply did not contain a parseable JSON object. "
+            "Reply with ONLY the JSON verdict object and nothing else.",
             max_tokens=16384,
         )
         parsed = extract_json(response)
@@ -202,18 +206,19 @@ Run the audit and return your JSON verdict."""
     output = result.model_dump()
 
     # Enforce Doc 328's critical-fail rule mechanically, not just via prompt.
-    has_critical_fail = any(
-        f.severity == "critical" and f.status == "fail" for f in result.findings
-    )
+    has_critical_fail = any(f.severity == "critical" and f.status == "fail" for f in result.findings)
     if has_critical_fail and output["verdict"] != "fail":
         output["verdict"] = "fail"
-        output["summary"] = (output["summary"] + "\n\nVerdict forced to FAIL: "
-                             "one or more critical checks failed.").strip()
+        output["summary"] = (
+            output["summary"] + "\n\nVerdict forced to FAIL: one or more critical checks failed."
+        ).strip()
     elif scoped_demoted and output["verdict"] == "fail" and not has_critical_fail:
         # Only Doc 192 packaging checks were blocking — not content failures.
         output["verdict"] = "pass_with_notes"
-        output["summary"] = (output["summary"] + "\n\nScoped Doc 192 packaging "
-                             "checks demoted (Phase 4); no content-critical fails remain.").strip()
+        output["summary"] = (
+            output["summary"] + "\n\nScoped Doc 192 packaging "
+            "checks demoted (Phase 4); no content-critical fails remain."
+        ).strip()
 
     return {
         "agent": "auditor",

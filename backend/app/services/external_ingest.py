@@ -10,6 +10,7 @@ exported as markdown), classifies each file by name, parses it in-memory
 Every file is imported in its own transaction: one bad file never blocks the
 rest of the folder.
 """
+
 import csv
 import datetime as dt
 import hashlib
@@ -17,24 +18,24 @@ import io
 import logging
 import re
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import insert
 
 from app.models.external import (
-    ExternalExport,
-    SearchConsoleDim,
-    SearchConsoleDaily,
     AIOverviewImpressions,
-    KeywordEstimate,
     Backlink,
-    TopPage,
     CallTracking,
-    LeadSummary,
-    GA4Event,
-    DomainReport,
     DomainMetric,
+    DomainReport,
+    ExternalExport,
+    GA4Event,
+    KeywordEstimate,
+    LeadSummary,
+    SearchConsoleDaily,
+    SearchConsoleDim,
+    TopPage,
 )
 from app.models.learning import ContentPerformanceSnapshot
 
@@ -84,12 +85,16 @@ GSC_PROFILE = {
     "search appearance.csv": ("dims", "appearance"),
 }
 
-MONTHS = {m: i + 1 for i, m in enumerate(
-    ["jan", "feb", "mar", "apr", "may", "jun",
-     "jul", "aug", "sep", "oct", "nov", "dec"])}
+MONTHS = {
+    m: i + 1
+    for i, m in enumerate(
+        ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    )
+}
 
 
 # ---------------------------------------------------------------- coercers
+
 
 def parse_int(value) -> int | None:
     if value is None:
@@ -98,7 +103,7 @@ def parse_int(value) -> int | None:
     if not v or v in {"-", "n/a", "N/A"}:
         return None
     try:
-        return int(round(float(v)))
+        return round(float(v))
     except ValueError:
         return None
 
@@ -200,7 +205,7 @@ def extract_domain_token(name: str) -> str | None:
 
 
 def _first_real_line(path: Path) -> str:
-    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+    with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             line = line.lstrip("\ufeff").strip()
             if line and not line.startswith("#"):
@@ -209,6 +214,7 @@ def _first_real_line(path: Path) -> str:
 
 
 # ---------------------------------------------------------------- classifier
+
 
 def classify(path: Path) -> tuple[str, str | None, str | None]:
     """(source_type, domain, brand). source_type may carry report_type via '_'."""
@@ -267,8 +273,9 @@ def classify(path: Path) -> tuple[str, str | None, str | None]:
         token = re.split(r"\.csv", name, flags=re.IGNORECASE)[0]
         domain = extract_domain_token(token) or normalize_domain(token)
         has_keywords = "keywords,volume" in header
-        is_top_page_name = bool(re.search(r"(^|[\s_])top pages?", low)) or \
-            bool(re.search(r"ubersuggest[_\s]|\(selected\)", low))
+        is_top_page_name = bool(re.search(r"(^|[\s_])top pages?", low)) or bool(
+            re.search(r"ubersuggest[_\s]|\(selected\)", low)
+        )
         if "url,title" in header or (is_top_page_name and not has_keywords):
             return "top_page", domain, brand_for(domain)
         if has_keywords:
@@ -290,6 +297,7 @@ def classify(path: Path) -> tuple[str, str | None, str | None]:
 
 # ---------------------------------------------------------------- parsers
 
+
 def _open_zip(data: bytes) -> zipfile.ZipFile | None:
     try:
         return zipfile.ZipFile(io.BytesIO(data))
@@ -304,7 +312,7 @@ def _open_zip(data: bytes) -> zipfile.ZipFile | None:
 # ValueError), which the per-file callers already turn into skippable errors.
 MAX_ZIP_ENTRIES = 2000
 MAX_ZIP_EXPANDED_BYTES = 512 * 1024 * 1024  # 512 MB total uncompressed
-MAX_ZIP_ENTRY_BYTES = 100 * 1024 * 1024     # 100 MB per entry uncompressed
+MAX_ZIP_ENTRY_BYTES = 100 * 1024 * 1024  # 100 MB per entry uncompressed
 MAX_ZIP_DEPTH = 5
 
 
@@ -346,8 +354,7 @@ class _ZipBudget:
     def spend_entry(self, n_bytes: int) -> None:
         if n_bytes > self.max_entry_bytes:
             raise ZipBudgetError(
-                f"Entry expands to {n_bytes} bytes, over the "
-                f"{self.max_entry_bytes} byte single-entry cap"
+                f"Entry expands to {n_bytes} bytes, over the {self.max_entry_bytes} byte single-entry cap"
             )
         self._entry_count += 1
         if self._entry_count > self.max_entries:
@@ -386,9 +393,7 @@ def _read_zip(path: Path) -> dict[str, bytes]:
 
     def walk(data: bytes, depth: int = 0):
         if depth > budget.max_depth:
-            raise ZipBudgetError(
-                f"Archive nests deeper than {budget.max_depth} levels (Fix 6)"
-            )
+            raise ZipBudgetError(f"Archive nests deeper than {budget.max_depth} levels (Fix 6)")
         zf = _open_zip(data)
         if zf is None:
             if depth == 0:
@@ -425,8 +430,10 @@ def _period_from_filters(inner: dict[str, bytes]) -> tuple[datetime | None, date
             m = re.match(r"([A-Za-z]{3,9} \d{1,2}, \d{4})\s*-\s*(.+)", (row.get("Value") or "").strip())
             if m:
                 start, end = parse_mdy(m.group(1)), parse_mdy(m.group(2))
-                return (datetime.combine(start, dt.time.min, tzinfo=timezone.utc) if start else None,
-                        datetime.combine(end, dt.time.min, tzinfo=timezone.utc) if end else None)
+                return (
+                    datetime.combine(start, dt.time.min, tzinfo=dt.UTC) if start else None,
+                    datetime.combine(end, dt.time.min, tzinfo=dt.UTC) if end else None,
+                )
     return None, None
 
 
@@ -435,8 +442,11 @@ def parse_search_console(path: Path) -> tuple[dict, list[dict], list[dict]]:
     period_from, period_to = _period_from_filters(inner)
     dims, daily = [], []
     key_fields = {
-        "query": "Top queries", "page": "Top pages", "country": "Country",
-        "device": "Device", "appearance": "Search appearance",
+        "query": "Top queries",
+        "page": "Top pages",
+        "country": "Country",
+        "device": "Device",
+        "appearance": "Search appearance",
     }
     for name, data in inner.items():
         role, dim_type = GSC_PROFILE.get(name.lower(), (None, None))
@@ -447,25 +457,29 @@ def parse_search_console(path: Path) -> tuple[dict, list[dict], list[dict]]:
                 day = parse_iso_date(row.get("Date"))
                 if day is None:
                     continue
-                daily.append({
-                    "day": day,
-                    "clicks": parse_int(row.get("Clicks")) or 0,
-                    "impressions": parse_int(row.get("Impressions")) or 0,
-                    "ctr": parse_float(row.get("CTR")),
-                    "position": parse_float(row.get("Position")),
-                })
+                daily.append(
+                    {
+                        "day": day,
+                        "clicks": parse_int(row.get("Clicks")) or 0,
+                        "impressions": parse_int(row.get("Impressions")) or 0,
+                        "ctr": parse_float(row.get("CTR")),
+                        "position": parse_float(row.get("Position")),
+                    }
+                )
             else:
                 key = row.get(key_fields[dim_type])
                 if not key:
                     continue
-                dims.append({
-                    "dim_type": dim_type,
-                    "key": key.strip(),
-                    "clicks": parse_int(row.get("Clicks")) or 0,
-                    "impressions": parse_int(row.get("Impressions")) or 0,
-                    "ctr": parse_float(row.get("CTR")),
-                    "position": parse_float(row.get("Position")),
-                })
+                dims.append(
+                    {
+                        "dim_type": dim_type,
+                        "key": key.strip(),
+                        "clicks": parse_int(row.get("Clicks")) or 0,
+                        "impressions": parse_int(row.get("Impressions")) or 0,
+                        "ctr": parse_float(row.get("CTR")),
+                        "position": parse_float(row.get("Position")),
+                    }
+                )
     return {"period_from": period_from, "period_to": period_to}, dims, daily
 
 
@@ -475,10 +489,12 @@ def parse_ai_overview(path: Path) -> tuple[dict, list[dict]]:
     rows = []
     for name, data in inner.items():
         base = name.rsplit(".", 1)[0].lower()
-        spec = {"chart": ("chart", None, "Date"),
-                "pages": ("pages", "Top pages", None),
-                "countries": ("countries", "Country", None),
-                "devices": ("devices", "Device", None)}.get(base)
+        spec = {
+            "chart": ("chart", None, "Date"),
+            "pages": ("pages", "Top pages", None),
+            "countries": ("countries", "Country", None),
+            "devices": ("devices", "Device", None),
+        }.get(base)
         if spec is None:
             continue
         dim_type, key_field, date_field = spec
@@ -504,23 +520,25 @@ def parse_ga4(path: Path) -> tuple[dict, list[dict], str | None]:
             end = parse_compact_date(m.group(1))
         if m := re.search(r"Property:\s*(.+)", line):
             domain = normalize_domain(m.group(1).split(" - ")[0])
-    body = "\n".join(l for l in text.splitlines() if not l.strip().startswith("#"))
+    body = "\n".join(line for line in text.splitlines() if not line.strip().startswith("#"))
     rows = []
     for r in csv.DictReader(io.StringIO(body)):
         event = (r.get("Event name") or "").strip()
         if not event:
             continue
-        rows.append({
-            "event_name": event,
-            "event_count": parse_int(r.get("Event count")) or 0,
-            "total_users": parse_int(r.get("Total users")) or 0,
-            "events_per_user": parse_float(r.get("Event count per active user")),
-            "total_revenue": parse_float(r.get("Total revenue")) or 0.0,
-        })
+        rows.append(
+            {
+                "event_name": event,
+                "event_count": parse_int(r.get("Event count")) or 0,
+                "total_users": parse_int(r.get("Total users")) or 0,
+                "events_per_user": parse_float(r.get("Event count per active user")),
+                "total_revenue": parse_float(r.get("Total revenue")) or 0.0,
+            }
+        )
     meta = {
-        "period_from": datetime.combine(start, dt.time.min, tzinfo=timezone.utc) if start else None,
-        "period_to": datetime.combine(end, dt.time.min, tzinfo=timezone.utc) if end else None,
-        "exported_at": datetime.combine(end, dt.time.min, tzinfo=timezone.utc) if end else None,
+        "period_from": datetime.combine(start, dt.time.min, tzinfo=dt.UTC) if start else None,
+        "period_to": datetime.combine(end, dt.time.min, tzinfo=dt.UTC) if end else None,
+        "exported_at": datetime.combine(end, dt.time.min, tzinfo=dt.UTC) if end else None,
     }
     return meta, rows, domain
 
@@ -532,21 +550,23 @@ def parse_calls(path: Path) -> list[dict]:
         row = {k.strip(): (v or "").strip() for k, v in raw.items()}
         if not any(row.get(k) for k in ("Name", "Customer #", "Duration", "Date")):
             continue
-        rows.append({
-            "name": row.get("Name"),
-            "customer_number": row.get("Customer #"),
-            "source": row.get("Tracking Source"),
-            "status": row.get("Call Status"),
-            "search_query": row.get("Search Query") or row.get("Search Query ") or None,
-            "referral": row.get("Referral"),
-            "page": row.get("Page") or row.get("Page URL") or None,
-            "last_url": row.get("Last URL"),
-            "likelihood": parse_float(row.get("Likelihood")),
-            "message_body": row.get("Message Body") or None,
-            "duration_seconds": parse_duration_seconds(row.get("Duration")),
-            "ring_time_seconds": parse_duration_seconds(row.get("Ring Time")),
-            "call_date": parse_iso_date(row.get("Date")),
-        })
+        rows.append(
+            {
+                "name": row.get("Name"),
+                "customer_number": row.get("Customer #"),
+                "source": row.get("Tracking Source"),
+                "status": row.get("Call Status"),
+                "search_query": row.get("Search Query") or row.get("Search Query ") or None,
+                "referral": row.get("Referral"),
+                "page": row.get("Page") or row.get("Page URL") or None,
+                "last_url": row.get("Last URL"),
+                "likelihood": parse_float(row.get("Likelihood")),
+                "message_body": row.get("Message Body") or None,
+                "duration_seconds": parse_duration_seconds(row.get("Duration")),
+                "ring_time_seconds": parse_duration_seconds(row.get("Ring Time")),
+                "call_date": parse_iso_date(row.get("Date")),
+            }
+        )
     return rows
 
 
@@ -557,15 +577,15 @@ def parse_leads(path: Path) -> tuple[dict, list[dict]]:
     if m:
         try:
             to_date = dt.datetime.strptime(m.group(1), "%m-%d-%Y").date()
-            period_to = datetime.combine(to_date, dt.time.min, tzinfo=timezone.utc)
+            period_to = datetime.combine(to_date, dt.time.min, tzinfo=dt.UTC)
             parts = re.fullmatch(r"(\d{2})/(\d{2})\s*-\s*(\d{2})/(\d{2})", m.group(2))
             if parts:
                 start_year = to_date.year
                 if int(parts.group(2)) > int(parts.group(4)):
                     start_year -= 1
                 period_from = datetime.combine(
-                    dt.date(start_year, int(parts.group(1)), int(parts.group(2))),
-                    dt.time.min, tzinfo=timezone.utc)
+                    dt.date(start_year, int(parts.group(1)), int(parts.group(2))), dt.time.min, tzinfo=dt.UTC
+                )
         except ValueError:
             pass
 
@@ -613,15 +633,17 @@ def parse_kbt(path: Path) -> list[dict]:
         kw = (r.get("Keywords") or "").strip()
         if not kw:
             continue
-        rows.append({
-            "keyword": kw,
-            "volume": parse_int(r.get("Volume")),
-            "position": parse_float(r.get("Position")),
-            "est_visits": parse_int(r.get("Est. Visits")),
-            "difficulty": parse_float(r.get("SEO Difficulty")),
-            "cpc": parse_float(r.get("CPC")),
-            "ranking_url": r.get("Ranking URL") or None,
-        })
+        rows.append(
+            {
+                "keyword": kw,
+                "volume": parse_int(r.get("Volume")),
+                "position": parse_float(r.get("Position")),
+                "est_visits": parse_int(r.get("Est. Visits")),
+                "difficulty": parse_float(r.get("SEO Difficulty")),
+                "cpc": parse_float(r.get("CPC")),
+                "ranking_url": r.get("Ranking URL") or None,
+            }
+        )
     return rows
 
 
@@ -631,17 +653,19 @@ def parse_backlinks(path: Path) -> list[dict]:
     for r in csv.DictReader(io.StringIO(text.lstrip("\ufeff"))):
         if not r.get("Target URL"):
             continue
-        rows.append({
-            "source_title": r.get("Source Page Title"),
-            "source_url": r.get("Source URL"),
-            "target_url": r.get("Target URL"),
-            "domain_authority": parse_int(r.get("Domain Authority")),
-            "page_authority": parse_int(r.get("Page Authority")),
-            "spam_score": parse_float(r.get("Spam Score")),
-            "anchor_text": r.get("Anchor Text"),
-            "first_seen": parse_iso_date(r.get("First Seen")),
-            "last_seen": parse_iso_date(r.get("Last Seen")),
-        })
+        rows.append(
+            {
+                "source_title": r.get("Source Page Title"),
+                "source_url": r.get("Source URL"),
+                "target_url": r.get("Target URL"),
+                "domain_authority": parse_int(r.get("Domain Authority")),
+                "page_authority": parse_int(r.get("Page Authority")),
+                "spam_score": parse_float(r.get("Spam Score")),
+                "anchor_text": r.get("Anchor Text"),
+                "first_seen": parse_iso_date(r.get("First Seen")),
+                "last_seen": parse_iso_date(r.get("Last Seen")),
+            }
+        )
     return rows
 
 
@@ -651,12 +675,14 @@ def parse_top_pages(path: Path) -> list[dict]:
     for r in csv.DictReader(io.StringIO(text.lstrip("\ufeff"))):
         if not r.get("URL"):
             continue
-        rows.append({
-            "url": r.get("URL"),
-            "title": r.get("Title"),
-            "est_visits": parse_int(r.get("Est. Visits")),
-            "backlinks": parse_int(r.get("Backlinks")),
-        })
+        rows.append(
+            {
+                "url": r.get("URL"),
+                "title": r.get("Title"),
+                "est_visits": parse_int(r.get("Est. Visits")),
+                "backlinks": parse_int(r.get("Backlinks")),
+            }
+        )
     return rows
 
 
@@ -669,7 +695,7 @@ def parse_domain_report(path: Path, report_type: str) -> tuple[dict, list[dict],
     if em:
         adate = parse_mdy(em.group(1)) or parse_iso_date(em.group(1))
         if adate:
-            exported_at = datetime.combine(adate, dt.time.min, tzinfo=timezone.utc)
+            exported_at = datetime.combine(adate, dt.time.min, tzinfo=dt.UTC)
     metrics = []
     if report_type == "backlinks":
         for metric, pattern in (
@@ -685,6 +711,7 @@ def parse_domain_report(path: Path, report_type: str) -> tuple[dict, list[dict],
 
 
 # ---------------------------------------------------------------- assembly
+
 
 def _build_detail_rows(export: ExternalExport, source_type: str, payload, domain: str | None):
     """Expand a parser payload into (ModelClass, list[dict]) pairs to insert."""
@@ -726,11 +753,18 @@ def _build_detail_rows(export: ExternalExport, source_type: str, payload, domain
             rec.update({"export_id": export.id, "domain": export.domain})
             out.append((TopPage, rec))
     elif source_type in {"traffic", "backlinks"} and "raw_text" in payload:
-        out.append((DomainReport, {
-            "export_id": export.id, "domain": row_domain,
-            "report_type": source_type, "source_file": export.file_name,
-            "raw_text": payload["raw_text"],
-        }))
+        out.append(
+            (
+                DomainReport,
+                {
+                    "export_id": export.id,
+                    "domain": row_domain,
+                    "report_type": source_type,
+                    "source_file": export.file_name,
+                    "raw_text": payload["raw_text"],
+                },
+            )
+        )
         for rec in payload["metrics"]:
             rec.update({"export_id": export.id, "domain": row_domain})
             out.append((DomainMetric, rec))
@@ -778,8 +812,7 @@ def import_external_file(db, path: Path, force: bool = False) -> dict:
     elif report_type in {"traffic", "backlinks"}:
         meta, metrics, content_domain = parse_domain_report(path, report_type)
         domain = content_domain or domain
-        payload = {"metrics": metrics,
-                   "raw_text": path.read_text(encoding="utf-8", errors="replace")}
+        payload = {"metrics": metrics, "raw_text": path.read_text(encoding="utf-8", errors="replace")}
         source_type = report_type
     else:
         raise ValueError(f"Unknown type {source_type}")
@@ -810,8 +843,7 @@ def import_external_file(db, path: Path, force: bool = False) -> dict:
         total += len(rows)
     export.row_count = total
     db.commit()
-    return {"filename": path.name, "status": "imported", "rows": total,
-            "source_type": source_type}
+    return {"filename": path.name, "status": "imported", "rows": total, "source_type": source_type}
 
 
 def delete_external_export(db, export) -> None:
@@ -834,14 +866,13 @@ def import_external_folder(data_dir: Path, db, force: bool = False) -> list[dict
     """Import every export file under ``data_dir``; one bad file never blocks the rest."""
     results = []
     if not data_dir.is_dir():
-        return [{"filename": str(data_dir), "status": "error",
-                 "error": "external data path not found"}]
+        return [{"filename": str(data_dir), "status": "error", "error": "external data path not found"}]
     for path in sorted(data_dir.rglob("*")):
         if not path.is_file() or path.name.startswith("."):
             continue
         try:
             results.append(import_external_file(db, path, force=force))
-        except Exception as e:  # noqa: BLE001 - per-file isolation
+        except Exception as e:
             logger.warning("Failed to import %s: %s", path.name, e)
             results.append({"filename": path.name, "status": "error", "error": str(e)})
     return results

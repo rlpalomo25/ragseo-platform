@@ -4,9 +4,9 @@ Revision ID: 0007_login_throttle
 Revises: 0006_doc_number_unique
 Create Date: 2026-09-15
 """
-from alembic import op
+
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import UUID
+from alembic import op
 
 revision = "0007_login_throttle"
 down_revision = "0006_doc_number_unique"

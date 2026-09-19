@@ -10,6 +10,7 @@ Revision ID: 0003_local_embeddings
 Revises: 0002_jobs
 Create Date: 2026-09-10
 """
+
 from alembic import op
 from pgvector.sqlalchemy import Vector
 

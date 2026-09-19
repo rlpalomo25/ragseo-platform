@@ -1,5 +1,3 @@
-import pytest
-
 from tests.conftest import login
 
 
@@ -16,15 +14,29 @@ def test_stats_aggregates(client, db_session, doctrine_corpus, test_user):
 
     doc = db_session.query(Document).order_by(Document.doc_number).first()
     for i in range(3):
-        db_session.add(DocChunk(
-            document_id=doc.id, chunk_index=i, heading_path="H", content="x" * 20,
-            token_count=5, content_hash=f"plain{i}", embedding=None,
-        ))
+        db_session.add(
+            DocChunk(
+                document_id=doc.id,
+                chunk_index=i,
+                heading_path="H",
+                content="x" * 20,
+                token_count=5,
+                content_hash=f"plain{i}",
+                embedding=None,
+            )
+        )
     for i in range(2):
-        db_session.add(DocChunk(
-            document_id=doc.id, chunk_index=10 + i, heading_path="H", content="y" * 20,
-            token_count=5, content_hash=f"embed{i}", embedding=[0.1] * 768,
-        ))
+        db_session.add(
+            DocChunk(
+                document_id=doc.id,
+                chunk_index=10 + i,
+                heading_path="H",
+                content="y" * 20,
+                token_count=5,
+                content_hash=f"embed{i}",
+                embedding=[0.1] * 768,
+            )
+        )
     db_session.commit()
 
     job = create_job(db_session, created_by=test_user.id, request="Write a gutter guard comparison page")

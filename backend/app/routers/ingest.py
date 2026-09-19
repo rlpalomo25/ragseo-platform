@@ -1,4 +1,5 @@
 """Admin ingest control panel: preview doctrine folder vs DB, then reingest."""
+
 import logging
 from pathlib import Path, PurePath
 
@@ -15,20 +16,20 @@ from app.models.document import Document
 from app.models.external import ExternalExport
 from app.models.user import User
 from app.services.doc_ingestion import (
-    ingest_all_docs,
     extract_doc_number,
-    extract_series,
     extract_doc_type,
-    extract_version,
+    extract_series,
     extract_title,
+    extract_version,
     file_hash,
+    ingest_all_docs,
 )
 from app.services.external_ingest import (
-    import_external_folder,
-    import_external_file,
     classify,
-    file_sha256,
     delete_external_export,
+    file_sha256,
+    import_external_file,
+    import_external_folder,
 )
 from app.services.learning_loop import snapshot_publications
 
@@ -43,10 +44,12 @@ MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB per uploaded export file
 def _external_folders() -> list[Path]:
     """Baked + writable external-data folders; nonexistent dirs are skipped."""
     folders: list[Path] = []
-    for folder in dict.fromkeys([
-        Path(settings.external_data_path),
-        Path(settings.external_upload_path),
-    ]):
+    for folder in dict.fromkeys(
+        [
+            Path(settings.external_data_path),
+            Path(settings.external_upload_path),
+        ]
+    ):
         if folder.is_dir():
             folders.append(folder)
     return folders
@@ -136,27 +139,31 @@ def _scan_doctrine(doctrine_path: Path, db: DBSession) -> list[IngestFileStatus]
                 )
                 chunk_count, embedded_chunks = row or (0, 0)
 
-            files.append(IngestFileStatus(
-                filename=filename,
-                doc_number=doc_number,
-                title=title,
-                series=extract_series(doc_number),
-                doc_type=extract_doc_type(title, filename),
-                version=extract_version(content),
-                word_count=len(content.split()),
-                status=status,
-                chunk_count=chunk_count or 0,
-                embedded_chunks=embedded_chunks or 0,
-            ))
-        except Exception as e:  # noqa: BLE001 - surface per-file read errors
+            files.append(
+                IngestFileStatus(
+                    filename=filename,
+                    doc_number=doc_number,
+                    title=title,
+                    series=extract_series(doc_number),
+                    doc_type=extract_doc_type(title, filename),
+                    version=extract_version(content),
+                    word_count=len(content.split()),
+                    status=status,
+                    chunk_count=chunk_count or 0,
+                    embedded_chunks=embedded_chunks or 0,
+                )
+            )
+        except Exception as e:
             logger.warning("Failed to inspect %s: %s", filepath.name, e)
-            files.append(IngestFileStatus(
-                filename=filepath.name,
-                doc_number="",
-                title="",
-                status="error",
-                error=str(e),
-            ))
+            files.append(
+                IngestFileStatus(
+                    filename=filepath.name,
+                    doc_number="",
+                    title="",
+                    status="error",
+                    error=str(e),
+                )
+            )
     return files
 
 
@@ -195,7 +202,7 @@ def reingest(admin: User = Depends(require_admin), db: DBSession = Depends(get_d
     try:
         stats = ingest_all_docs(db)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return IngestResultResponse(message="Reingestion complete", stats=IngestStats(**stats))
 
 
@@ -261,7 +268,9 @@ class ExternalDeleteResultResponse(BaseModel):
 def external_status(admin: User = Depends(require_admin), db: DBSession = Depends(get_db)):
     folders = _external_folders()
     if not folders:
-        raise HTTPException(status_code=500, detail=f"External data path not found: {settings.external_data_path}")
+        raise HTTPException(
+            status_code=500, detail=f"External data path not found: {settings.external_data_path}"
+        )
 
     imported_hashes = {row[0] for row in db.query(ExternalExport.file_hash).all()}
 
@@ -276,9 +285,8 @@ def external_status(admin: User = Depends(require_admin), db: DBSession = Depend
                 source_type, domain, brand = classify(filepath)
                 source_type = source_type.split(":", 1)[0]
                 fhash = file_sha256(filepath.read_bytes())
-            except Exception as e:  # noqa: BLE001
-                status = ExternalFileStatus(
-                    filename=filepath.name, status="error", error=str(e))
+            except Exception as e:
+                status = ExternalFileStatus(filename=filepath.name, status="error", error=str(e))
             else:
                 row = db.query(ExternalExport).filter(ExternalExport.file_hash == fhash).first()
                 status = ExternalFileStatus(
@@ -311,7 +319,9 @@ def external_status(admin: User = Depends(require_admin), db: DBSession = Depend
 def import_external(admin: User = Depends(require_admin), db: DBSession = Depends(get_db)):
     folders = _external_folders()
     if not folders:
-        raise HTTPException(status_code=500, detail=f"External data path not found: {settings.external_data_path}")
+        raise HTTPException(
+            status_code=500, detail=f"External data path not found: {settings.external_data_path}"
+        )
     results = []
     for folder in folders:
         results.extend(import_external_folder(folder, db))
@@ -327,9 +337,15 @@ def import_external(admin: User = Depends(require_admin), db: DBSession = Depend
     results = list(seen.values())
     resp = ExternalImportResultResponse(message="External data import complete", files=[])
     for r in results:
-        resp.files.append(ExternalImportItem(
-            filename=r["filename"], status=r["status"], rows=r.get("rows", 0),
-            source_type=r.get("source_type"), error=r.get("error")))
+        resp.files.append(
+            ExternalImportItem(
+                filename=r["filename"],
+                status=r["status"],
+                rows=r.get("rows", 0),
+                source_type=r.get("source_type"),
+                error=r.get("error"),
+            )
+        )
         if r["status"] == "imported":
             resp.imported += 1
         elif r["status"] == "skipped":
@@ -358,7 +374,9 @@ async def upload_external(
             continue
         content = await f.read()
         if len(content) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail=f"{name} exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB")
+            raise HTTPException(
+                status_code=413, detail=f"{name} exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
+            )
         (upload_dir / name).write_bytes(content)
         saved.append(upload_dir / name)
         logger.info("User '%s' uploaded %s (%d bytes)", user.username, name, len(content))
@@ -367,16 +385,22 @@ async def upload_external(
     for p in saved:
         try:
             results.append(import_external_file(db, p))
-        except Exception as e:  # noqa: BLE001 - one bad file never blocks the rest
+        except Exception as e:
             logger.warning("Failed to import uploaded %s: %s", p.name, e)
             results.append({"filename": p.name, "status": "error", "error": str(e)})
     learning = snapshot_publications(db)
     logger.info("Learning loop after upload: %s", learning)
     resp = ExternalImportResultResponse(message=f"Uploaded and imported {len(results)} file(s)", files=[])
     for r in results:
-        resp.files.append(ExternalImportItem(
-            filename=r["filename"], status=r["status"], rows=r.get("rows", 0),
-            source_type=r.get("source_type"), error=r.get("error")))
+        resp.files.append(
+            ExternalImportItem(
+                filename=r["filename"],
+                status=r["status"],
+                rows=r.get("rows", 0),
+                source_type=r.get("source_type"),
+                error=r.get("error"),
+            )
+        )
         if r["status"] == "imported":
             resp.imported += 1
         elif r["status"] == "skipped":
@@ -424,9 +448,13 @@ def delete_external(
         # a same-named upload copy nor delete any rows for it.
         if name in baked_file_names:
             resp.baked += 1
-            resp.files.append(ExternalDeleteItem(
-                filename=name, status="baked",
-                message="Part of the base baked dataset and cannot be deleted from the website."))
+            resp.files.append(
+                ExternalDeleteItem(
+                    filename=name,
+                    status="baked",
+                    message="Part of the base baked dataset and cannot be deleted from the website.",
+                )
+            )
             continue
 
         hashes: list[str] = []
@@ -446,8 +474,7 @@ def delete_external(
         # duplicate a baked export — the importer hash-dedupes, so only the baked
         # row exists under that hash). The upload copy (if any) is still removed.
         if baked_file_names:
-            exports = {rid: row for rid, row in exports.items()
-                       if row.file_name not in baked_file_names}
+            exports = {rid: row for rid, row in exports.items() if row.file_name not in baked_file_names}
 
         if not exports and not hashes:
             db.commit()
@@ -456,8 +483,9 @@ def delete_external(
             continue
 
         for row in exports.values():
-            logger.info("User '%s' deleted export '%s' (rows: %d)",
-                        user.username, row.file_name, row.row_count)
+            logger.info(
+                "User '%s' deleted export '%s' (rows: %d)", user.username, row.file_name, row.row_count
+            )
             delete_external_export(db, row)
         db.commit()
         resp.deleted += 1

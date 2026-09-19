@@ -4,10 +4,11 @@ Revision ID: 0001_baseline
 Revises:
 Create Date: 2026-08-20
 """
-from alembic import op
+
 import sqlalchemy as sa
-from sqlalchemy import Uuid
+from alembic import op
 from pgvector.sqlalchemy import Vector
+from sqlalchemy import Uuid
 
 revision = "0001_baseline"
 down_revision = None
@@ -35,7 +36,9 @@ def upgrade() -> None:
     op.create_table(
         "sessions",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("user_id", Uuid(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id", Uuid(as_uuid=True), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("token", sa.String(255), nullable=False, unique=True, index=True),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
@@ -61,7 +64,12 @@ def upgrade() -> None:
     op.create_table(
         "doc_references",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("source_doc_id", Uuid(as_uuid=True), sa.ForeignKey("documents.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "source_doc_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("documents.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("target_doc_number", sa.String(20), nullable=False, index=True),
         sa.Column("reference_type", sa.String(20), nullable=False),
     )
@@ -83,7 +91,13 @@ def upgrade() -> None:
     op.create_table(
         "doc_chunks",
         sa.Column("id", Uuid(as_uuid=True), primary_key=True),
-        sa.Column("document_id", Uuid(as_uuid=True), sa.ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True),
+        sa.Column(
+            "document_id",
+            Uuid(as_uuid=True),
+            sa.ForeignKey("documents.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        ),
         sa.Column("chunk_index", sa.Integer(), nullable=False),
         sa.Column("heading_path", sa.String(500), nullable=True),
         sa.Column("content", sa.Text(), nullable=False),

@@ -1,18 +1,17 @@
 import io
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
+from app.services.external_data import build_market_context
 from app.services.external_ingest import (
     classify,
+    import_external_folder,
     parse_duration_seconds,
     parse_leads,
     parse_top_pages,
-    import_external_folder,
 )
-from app.services.external_data import build_market_context
 
 
 def make_gsc_zip(domain="kleangutter"):
@@ -20,24 +19,29 @@ def make_gsc_zip(domain="kleangutter"):
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, "w") as z:
         for name, body in [
-            ("Chart.csv", "Date,Clicks,Impressions,CTR,Position\n"
-                          "2026-08-28,10,100,10,5.2\n2026-08-29,20,120,16.67,4.5\n"),
-            ("Queries.csv", "Top queries,Clicks,Impressions,CTR,Position\n"
-                            "gutter guard cost,22,300,7.33,3.1\n"
-                            "klean gutter,8,90,8.89,1.0\n"),
-            ("Pages.csv", "Top pages,Clicks,Impressions,CTR,Position\n"
-                          "https://kleangutter.com/,12,180,6.67,4.0\n"),
-            ("Countries.csv", "Country,Clicks,Impressions,CTR,Position\n"
-                              "United States,25,380,6.58,3.5\n"),
-            ("Devices.csv", "Device,Clicks,Impressions,CTR,Position\n"
-                            "Mobile,18,240,7.5,3.8\n"),
-            ("Filters.csv", "Filter,Value\nSearch type,Web\nDate,\"Aug 28, 2026-Sep 3, 2026\"\n"),
+            (
+                "Chart.csv",
+                "Date,Clicks,Impressions,CTR,Position\n"
+                "2026-08-28,10,100,10,5.2\n2026-08-29,20,120,16.67,4.5\n",
+            ),
+            (
+                "Queries.csv",
+                "Top queries,Clicks,Impressions,CTR,Position\n"
+                "gutter guard cost,22,300,7.33,3.1\n"
+                "klean gutter,8,90,8.89,1.0\n",
+            ),
+            (
+                "Pages.csv",
+                "Top pages,Clicks,Impressions,CTR,Position\nhttps://kleangutter.com/,12,180,6.67,4.0\n",
+            ),
+            ("Countries.csv", "Country,Clicks,Impressions,CTR,Position\nUnited States,25,380,6.58,3.5\n"),
+            ("Devices.csv", "Device,Clicks,Impressions,CTR,Position\nMobile,18,240,7.5,3.8\n"),
+            ("Filters.csv", 'Filter,Value\nSearch type,Web\nDate,"Aug 28, 2026-Sep 3, 2026"\n'),
         ]:
             z.writestr(zipfile.ZipInfo(name, date_time=FIXED), body)
     outer = io.BytesIO()
     with zipfile.ZipFile(outer, "w") as z:
-        z.writestr(zipfile.ZipInfo(f"{domain}_GSC_Export_[09112026].csv", date_time=FIXED),
-                   inner.getvalue())
+        z.writestr(zipfile.ZipInfo(f"{domain}_GSC_Export_[09112026].csv", date_time=FIXED), inner.getvalue())
     return outer.getvalue()
 
 
@@ -50,7 +54,7 @@ def make_ai_zip():
             ("Pages.csv", "Top pages,Impressions\nhttps://kleangutter.com/,41\n"),
             ("Countries.csv", "Country,Impressions\nUnited States,40\n"),
             ("Devices.csv", "Device,Impressions\nDesktop,30\n"),
-            ("Filters.csv", "Filter,Value\nDate,\"Aug 28, 2026-Sep 3, 2026\"\n"),
+            ("Filters.csv", 'Filter,Value\nDate,"Aug 28, 2026-Sep 3, 2026"\n'),
         ]:
             z.writestr(zipfile.ZipInfo(name, date_time=FIXED), body)
     return buf.getvalue()
@@ -68,28 +72,38 @@ page_view,200,98,2.13,0
 submit_lead_form,1,1,1,0
 """
 
-CALLS_CSV = ('Name,Customer #,Tracking Source,Call Status,Search Query,Referral,Page,'
-             'Last URL,Likelihood,Message Body,Duration,Ring Time,Talk Time,Date\n'
-             '"Marty SOUTHERLAND",(615) 618-2000,Website,answered,"gutter guards",,'
-             '/how-it-works/,https://kleangutter.com/,0.9,"Called for quote",'
-             '00:03:40,00:02:47,00:00:48,2026-09-04\n')
+CALLS_CSV = (
+    "Name,Customer #,Tracking Source,Call Status,Search Query,Referral,Page,"
+    "Last URL,Likelihood,Message Body,Duration,Ring Time,Talk Time,Date\n"
+    '"Marty SOUTHERLAND",(615) 618-2000,Website,answered,"gutter guards",,'
+    '/how-it-works/,https://kleangutter.com/,0.9,"Called for quote",'
+    "00:03:40,00:02:47,00:00:48,2026-09-04\n"
+)
 
-LEADS_TXT = ("Week ending: 09-04-2026 (08/28 - 09/04)\n\n"
-             "MasterShield: 21 leads\n  - Form fills: 21\n  - VAPI calls: 0\n\n"
-             "Klean Gutter: 2 leads\n  - Form fills: 2\n  - VAPI calls: 0\n")
+LEADS_TXT = (
+    "Week ending: 09-04-2026 (08/28 - 09/04)\n\n"
+    "MasterShield: 21 leads\n  - Form fills: 21\n  - VAPI calls: 0\n\n"
+    "Klean Gutter: 2 leads\n  - Form fills: 2\n  - VAPI calls: 0\n"
+)
 
-KBT_CSV = ("\ufeffNo,Keywords,Volume,Position,Est. Visits,SEO Difficulty,CPC,Ranking URL\n"
-           "1,klean gutter,90,1,31,31,0.0,http://kleangutter.com/\n"
-           "2,micro mesh gutter guards,12100,5,158,25,4.72,http://kleangutter.com/\n")
+KBT_CSV = (
+    "\ufeffNo,Keywords,Volume,Position,Est. Visits,SEO Difficulty,CPC,Ranking URL\n"
+    "1,klean gutter,90,1,31,31,0.0,http://kleangutter.com/\n"
+    "2,micro mesh gutter guards,12100,5,158,25,4.72,http://kleangutter.com/\n"
+)
 
-BACKLINK_CSV = ("\ufeffNo,Source Page Title,Source URL,Target URL,Domain Authority,Page Authority,"
-                "Spam Score,Anchor Text,First Seen,Last Seen\n"
-                '1,"Review","https://imdb.example/x","https://kleangutter.com/",95,69,5,"review",'
-                "2023-03-23,2026-06-30\n")
+BACKLINK_CSV = (
+    "\ufeffNo,Source Page Title,Source URL,Target URL,Domain Authority,Page Authority,"
+    "Spam Score,Anchor Text,First Seen,Last Seen\n"
+    '1,"Review","https://imdb.example/x","https://kleangutter.com/",95,69,5,"review",'
+    "2023-03-23,2026-06-30\n"
+)
 
-TOP_PAGES_CSV = ("\ufeffNo,URL,Title,Est. Visits,Backlinks\n"
-                 '1,"http://kleangutter.com/christmas-light-clips/","How to Hang Lights",24,5\n'
-                 '2,"http://kleangutter.com/","Klean Gutter",21,159\n')
+TOP_PAGES_CSV = (
+    "\ufeffNo,URL,Title,Est. Visits,Backlinks\n"
+    '1,"http://kleangutter.com/christmas-light-clips/","How to Hang Lights",24,5\n'
+    '2,"http://kleangutter.com/","Klean Gutter",21,159\n'
+)
 
 TRAFFIC_MD = """# Assessment Report
 
@@ -127,7 +141,9 @@ def external_dir(tmp_path):
     (tmp_path / "KleanGutter_GSC_Export_[09112026].csv.zip.zip").write_bytes(make_gsc_zip())
     (tmp_path / "kleangutter.com-AI-Features-2026-09-03.zip").write_bytes(make_ai_zip())
     (tmp_path / "Kleangutter-Performance-on-Search-2026-09-04 csv.csv").write_text(GA4_CSV, encoding="utf-8")
-    (tmp_path / "Klean Gutter- calls export from 2026-08-28 to 2026-09-04.csv").write_text(CALLS_CSV, encoding="utf-8")
+    (tmp_path / "Klean Gutter- calls export from 2026-08-28 to 2026-09-04.csv").write_text(
+        CALLS_CSV, encoding="utf-8"
+    )
     (tmp_path / "Leads_Summary_Week_08-28-2026_to_09-04-2026.txt").write_text(LEADS_TXT, encoding="utf-8")
     (tmp_path / "MasterShield.com_KBT.csv (3).csv").write_text(KBT_CSV, encoding="utf-8")
     (tmp_path / "LeafFilter.com_Backlinks.csv (4).csv").write_text(BACKLINK_CSV, encoding="utf-8")
@@ -138,6 +154,7 @@ def external_dir(tmp_path):
 
 
 # ------------------------------------------------------------------- classifier
+
 
 def test_classify_all_known_types(tmp_path):
     from pathlib import Path
@@ -151,8 +168,14 @@ def test_classify_all_known_types(tmp_path):
         "MicroMeshGutterGuards_GSC_Export_[x].csv.zip.zip": ("search_console", "micromeshgutterguards.com"),
         "kleangutter.com-AI-Features-2026-09-03.zip": ("ai_overview", "kleangutter.com"),
         "Kleangutter-Performance-on-Search-2026-09-04 csv.csv": ("ga4_event", "kleangutter.com"),
-        "Mastershield - calls export from 2026-08-28 to 2026-09-04.csv": ("call_tracking", "mastershield.com"),
-        "MicromeshGG  calls export from 2026-08-28 to 2026-09-04.csv": ("call_tracking", "micromeshgutterguards.com"),
+        "Mastershield - calls export from 2026-08-28 to 2026-09-04.csv": (
+            "call_tracking",
+            "mastershield.com",
+        ),
+        "MicromeshGG  calls export from 2026-08-28 to 2026-09-04.csv": (
+            "call_tracking",
+            "micromeshgutterguards.com",
+        ),
         "Leads_Summary_Week_08-28-2026_to_09-04-2026.txt": ("lead_summary", "all"),
         "MasterShield.com_KBT.csv (3).csv": ("keyword_estimate", "mastershield.com"),
         "LeafFilter.com_Backlinks.csv (4).csv": ("backlink", "leaffilter.com"),
@@ -161,18 +184,22 @@ def test_classify_all_known_types(tmp_path):
         "ubersuggest_gutterhelmet.com_(selected).csv": ("top_page", "gutterhelmet.com"),
         "GutterGuardsAmerica.com_KBT.csv (2).csv": ("top_page", "gutterguardsamerica.com"),
         "kleangutter.com_Traffic_Overview.pdf (3).md": ("domain_report", "kleangutter.com"),
-        "traffic-overview_homecraftgutterprotection-com_2026-09-03.md": ("domain_report", "homecraftgutterprotection.com"),
+        "traffic-overview_homecraftgutterprotection-com_2026-09-03.md": (
+            "domain_report",
+            "homecraftgutterprotection.com",
+        ),
     }
     for filename, (expected_type, expected_domain) in files.items():
         p = tmp_path / filename
         header = kbt_like if expected_type == "top_page" else kbt_header
         p.write_text(header + "\n" if filename.endswith(".csv") else "", encoding="utf-8")
-        st, dom, brand = classify(Path(p))
+        st, dom, _ = classify(Path(p))
         assert st.split(":", 1)[0] == expected_type, filename
         assert dom == expected_domain, filename
 
 
 # ------------------------------------------------------------------- parsers
+
 
 def test_parse_duration_seconds():
     assert parse_duration_seconds("00:03:40") == 220
@@ -189,7 +216,7 @@ def test_parse_leads_recognizes_each_brand(tmp_path):
     assert by_domain["mastershield.com"]["form_fills"] == 21
     assert by_domain["kleangutter.com"]["form_fills"] == 2
     assert by_domain["kleangutter.com"]["vapi_calls"] == 0
-    assert meta["period_to"] == datetime(2026, 9, 4, tzinfo=timezone.utc)
+    assert meta["period_to"] == datetime(2026, 9, 4, tzinfo=UTC)
 
 
 def test_parse_top_pages(tmp_path):
@@ -203,11 +230,13 @@ def test_parse_top_pages(tmp_path):
 
 # ------------------------------------------------------------------- full import
 
-def test_import_external_folder_populates_tables_and_is_idempotent(client, admin_user, db_session, external_dir):
+
+def test_import_external_folder_populates_tables_and_is_idempotent(
+    client, admin_user, db_session, external_dir
+):
     from app.models import external as m
 
     results = import_external_folder(external_dir, db_session)
-    by_name = {r["filename"]: r for r in results}
     assert all(r["status"] == "imported" for r in results), [r for r in results if r["status"] != "imported"]
 
     exports = db_session.query(m.ExternalExport).all()
@@ -222,8 +251,7 @@ def test_import_external_folder_populates_tables_and_is_idempotent(client, admin
     assert len(db_session.query(m.Backlink).all()) == 1
     assert len(db_session.query(m.TopPage).all()) == 2
     assert len(db_session.query(m.DomainReport).all()) == 2
-    da = (db_session.query(m.DomainMetric)
-          .filter(m.DomainMetric.metric == "domain_authority").first())
+    da = db_session.query(m.DomainMetric).filter(m.DomainMetric.metric == "domain_authority").first()
     assert da is not None and int(da.value) == 41
 
     sc = db_session.query(m.SearchConsoleDim).first()
@@ -263,6 +291,7 @@ def test_market_context_builds_for_brand(client, admin_user, db_session, externa
 
 
 # ------------------------------------------------------------------- API
+
 
 def login_admin(client):
     from tests.conftest import login
@@ -307,13 +336,13 @@ def test_external_status_and_import(client, admin_user, external_dir, monkeypatc
 
 # ------------------------------------------------------------------- upload API
 
+
 def _upload_path(tmp_path):
     return str(tmp_path / "uploads")
 
 
 def _upload_files(client, names_contents, upload_dir):
-    files = [("files", (name, content, "application/octet-stream"))
-             for name, content in names_contents]
+    files = [("files", (name, content, "application/octet-stream")) for name, content in names_contents]
     return client.post("/api/ingest/external/upload", files=files)
 
 
@@ -332,12 +361,17 @@ def test_writer_can_upload_and_imports(client, test_user, db_session, tmp_path, 
     upload_dir = _upload_path(tmp_path)
     monkeypatch.setattr(get_settings(), "external_upload_path", upload_dir)
     from tests.conftest import login
+
     login(client, "testwriter", "secret123")
 
-    r = _upload_files(client, [
-        ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
-        ("Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode()),
-    ], upload_dir)
+    r = _upload_files(
+        client,
+        [
+            ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
+            ("Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode()),
+        ],
+        upload_dir,
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["imported"] == 2
@@ -353,9 +387,13 @@ def test_writer_can_upload_and_imports(client, test_user, db_session, tmp_path, 
     assert db_session.query(m.LeadSummary).count() == 2
 
     # same content again -> skipped, row counts unchanged
-    r2 = _upload_files(client, [
-        ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
-    ], upload_dir)
+    r2 = _upload_files(
+        client,
+        [
+            ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
+        ],
+        upload_dir,
+    )
     body2 = r2.json()
     assert body2["imported"] == 0
     assert body2["skipped"] == 1
@@ -369,9 +407,13 @@ def test_upload_status_shows_uploaded_files(client, admin_user, tmp_path, monkey
     monkeypatch.setattr(get_settings(), "external_upload_path", upload_dir)
     login_admin(client)
 
-    _upload_files(client, [
-        ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
-    ], upload_dir)
+    _upload_files(
+        client,
+        [
+            ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
+        ],
+        upload_dir,
+    )
 
     r = client.get("/api/ingest/external/status")
     assert r.status_code == 200
@@ -386,10 +428,18 @@ def test_upload_sanitizes_path_traversal(client, test_user, tmp_path, monkeypatc
     upload_dir = _upload_path(tmp_path)
     monkeypatch.setattr(get_settings(), "external_upload_path", upload_dir)
     from tests.conftest import login
+
     login(client, "testwriter", "secret123")
 
-    r = client.post("/api/ingest/external/upload", files=[
-        ("files", ("../../Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode(), "text/plain"))])
+    r = client.post(
+        "/api/ingest/external/upload",
+        files=[
+            (
+                "files",
+                ("../../Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode(), "text/plain"),
+            )
+        ],
+    )
     assert r.status_code == 200, r.text
     assert r.json()["imported"] == 1
     assert (tmp_path / "uploads" / "Leads_Summary_Week_08-28-2026_to_09-04-2026.txt").is_file()
@@ -397,25 +447,25 @@ def test_upload_sanitizes_path_traversal(client, test_user, tmp_path, monkeypatc
 
 
 def test_upload_rejects_oversized_file(client, test_user, tmp_path, monkeypatch):
-    from app.config import get_settings
     import app.routers.ingest as ingest_router
+    from app.config import get_settings
 
     monkeypatch.setattr(get_settings(), "external_upload_path", _upload_path(tmp_path))
     monkeypatch.setattr(ingest_router, "MAX_UPLOAD_BYTES", 16)
     from tests.conftest import login
+
     login(client, "testwriter", "secret123")
 
     big = b"x" * 64
-    r = client.post("/api/ingest/external/upload", files=[
-        ("files", ("huge.csv", big, "text/plain"))])
+    r = client.post("/api/ingest/external/upload", files=[("files", ("huge.csv", big, "text/plain"))])
     assert r.status_code == 413
 
 
 # ------------------------------------------------------------------- delete API
 
+
 def _delete_files(client, filenames):
-    return client.request("DELETE", "/api/ingest/external/delete",
-                          json={"filenames": filenames})
+    return client.request("DELETE", "/api/ingest/external/delete", json={"filenames": filenames})
 
 
 def test_delete_requires_auth(client, admin_user, tmp_path, monkeypatch):
@@ -433,12 +483,17 @@ def test_writer_can_delete_uploaded_files(client, test_user, db_session, tmp_pat
     upload_dir = _upload_path(tmp_path)
     monkeypatch.setattr(get_settings(), "external_upload_path", upload_dir)
     from tests.conftest import login
+
     login(client, "testwriter", "secret123")
 
-    _upload_files(client, [
-        ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
-        ("Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode()),
-    ], upload_dir)
+    _upload_files(
+        client,
+        [
+            ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
+            ("Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode()),
+        ],
+        upload_dir,
+    )
     assert db_session.query(m.ExternalExport).count() == 2
     assert db_session.query(m.SearchConsoleDaily).count() == 2
 
@@ -476,7 +531,8 @@ def test_delete_reports_baked_file(client, admin_user, external_dir, tmp_path, m
 
 
 def test_delete_hard_rejects_baked_name_even_with_upload_copy(
-        client, admin_user, external_dir, tmp_path, monkeypatch, db_session):
+    client, admin_user, external_dir, tmp_path, monkeypatch, db_session
+):
     from app.config import get_settings
     from app.models import external as m
 
@@ -490,9 +546,13 @@ def test_delete_hard_rejects_baked_name_even_with_upload_copy(
     rows_before = db_session.query(m.ExternalExport).count()
 
     # same-named copy lands in the writable upload folder too (import = hash-dup -> skipped)
-    r = _upload_files(client, [
-        ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
-    ], upload_dir)
+    r = _upload_files(
+        client,
+        [
+            ("KleanGutter_GSC_Export_[09112026].csv.zip.zip", make_gsc_zip()),
+        ],
+        upload_dir,
+    )
     assert r.json()["skipped"] == 1, r.json()
     assert (tmp_path / "uploads" / "KleanGutter_GSC_Export_[09112026].csv.zip.zip").is_file()
 
@@ -508,7 +568,8 @@ def test_delete_hard_rejects_baked_name_even_with_upload_copy(
 
 
 def test_delete_renamed_upload_never_touches_baked_rows(
-        client, admin_user, external_dir, tmp_path, monkeypatch, db_session):
+    client, admin_user, external_dir, tmp_path, monkeypatch, db_session
+):
     from app.config import get_settings
     from app.models import external as m
 
@@ -544,6 +605,7 @@ def test_delete_reports_not_found(client, test_user, tmp_path, monkeypatch):
 
     monkeypatch.setattr(get_settings(), "external_upload_path", _upload_path(tmp_path))
     from tests.conftest import login
+
     login(client, "testwriter", "secret123")
 
     r = _delete_files(client, ["nope.csv"])
@@ -567,9 +629,13 @@ def test_delete_status_flags_deletable_uploads(client, admin_user, external_dir,
     assert by_name["KleanGutter_GSC_Export_[09112026].csv.zip.zip"]["deletable"] is False
 
     # uploaded file -> deletable
-    _upload_files(client, [
-        ("Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode()),
-    ], upload_dir)
+    _upload_files(
+        client,
+        [
+            ("Leads_Summary_Week_08-28-2026_to_09-04-2026.txt", LEADS_TXT.encode()),
+        ],
+        upload_dir,
+    )
     status2 = client.get("/api/ingest/external/status").json()
     by_name2 = {f["filename"]: f for f in status2["files"]}
     assert by_name2["Leads_Summary_Week_08-28-2026_to_09-04-2026.txt"]["deletable"] is True
@@ -592,6 +658,7 @@ def test_status_ignores_hidden_placeholder_files(client, admin_user, tmp_path, m
 
 
 # ---------------------------------------------------------------- Fix 6: decompression budgets
+
 
 def test_zip_budget_rejects_oversized_entry():
     from app.services import external_ingest as m
@@ -641,12 +708,14 @@ def test_read_zip_expands_normal_nested_archive(tmp_path):
 
     inner = io.BytesIO()
     with zipfile.ZipFile(inner, "w") as z:
-        z.writestr(zipfile.ZipInfo("Chart.csv", date_time=_FIXED_ZIP_DATE),
-                   "Date,Clicks\n2026-08-28,10\n")
-    _write_zip(tmp_path / "bundle.zip", [
-        ("kleangutter_GSC_Export.csv", inner.getvalue()),
-        ("leads.txt", b"week\n"),
-    ])
+        z.writestr(zipfile.ZipInfo("Chart.csv", date_time=_FIXED_ZIP_DATE), "Date,Clicks\n2026-08-28,10\n")
+    _write_zip(
+        tmp_path / "bundle.zip",
+        [
+            ("kleangutter_GSC_Export.csv", inner.getvalue()),
+            ("leads.txt", b"week\n"),
+        ],
+    )
 
     out = _read_zip(tmp_path / "bundle.zip")
     assert "leads.txt" in out

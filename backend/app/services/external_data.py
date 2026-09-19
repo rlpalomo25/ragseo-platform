@@ -9,21 +9,23 @@ Every aggregation is scoped to the newest export of its source type for the
 domain, so overlapping weekly imports (dedup by file sha256) never inflate
 "this week" numbers with older history.
 """
-from datetime import date, datetime, timezone
+
+from datetime import UTC, date, datetime
 from uuid import UUID
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
 
 from app.models.external import (
-    ExternalExport,
-    SearchConsoleDim,
     AIOverviewImpressions,
-    KeywordEstimate,
-    TopPage,
     CallTracking,
-    LeadSummary,
-    GA4Event,
     DomainMetric,
+    ExternalExport,
+    GA4Event,
+    KeywordEstimate,
+    LeadSummary,
+    SearchConsoleDim,
+    TopPage,
 )
 from app.services.external_ingest import BRAND_DOMAINS
 
@@ -50,10 +52,12 @@ def _fmt_int(v) -> str:
 
 
 def _get_export_period(db: DBSession, domain: str) -> tuple[str | None, date | None, date | None]:
-    row = (db.query(ExternalExport.period_from, ExternalExport.period_to, ExternalExport.file_name)
-           .filter(ExternalExport.domain == domain)
-           .order_by(ExternalExport.imported_at.desc())
-           .first())
+    row = (
+        db.query(ExternalExport.period_from, ExternalExport.period_to, ExternalExport.file_name)
+        .filter(ExternalExport.domain == domain)
+        .order_by(ExternalExport.imported_at.desc())
+        .first()
+    )
     if not row:
         return None, None, None
     pf = row.period_from.date() if row.period_from else None
@@ -61,7 +65,7 @@ def _get_export_period(db: DBSession, domain: str) -> tuple[str | None, date | N
     return row.file_name, pf, pt
 
 
-def _latest_export_ids(db: DBSession, domain: str) -> dict[str, UUID]:
+def latest_export_ids(db: DBSession, domain: str) -> dict[str, UUID]:
     """Latest external_exports.id per source_type for a domain.
 
     "Latest" is decided by (imported_at, id): a tie on the import timestamp
@@ -72,7 +76,7 @@ def _latest_export_ids(db: DBSession, domain: str) -> dict[str, UUID]:
     for row in db.query(ExternalExport).filter(ExternalExport.domain == domain).all():
         ts = row.imported_at if isinstance(row.imported_at, datetime) else datetime.min
         if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
+            ts = ts.replace(tzinfo=UTC)
         key = (ts, row.id)
         if row.source_type not in best or key > best[row.source_type]:
             best[row.source_type] = key
@@ -81,7 +85,8 @@ def _latest_export_ids(db: DBSession, domain: str) -> dict[str, UUID]:
 
 def _gsc_summary(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
     q = db.query(SearchConsoleDim).filter(
-        SearchConsoleDim.domain == domain, SearchConsoleDim.dim_type == "query")
+        SearchConsoleDim.domain == domain, SearchConsoleDim.dim_type == "query"
+    )
     if latest.get("search_console"):
         q = q.filter(SearchConsoleDim.export_id == latest["search_console"])
     dims = q.order_by(SearchConsoleDim.impressions.desc()).limit(12).all()
@@ -90,23 +95,25 @@ def _gsc_summary(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
     lines = ["Top queries ranked in GSC (impressions / clicks / avg CTR / position):"]
     for d in dims:
         lines.append(
-            f"  - \"{d.key}\" — {_fmt_int(d.impressions)} imp, {_fmt_int(d.clicks)} clicks, "
-            f"CTR {_fmt_pct(d.ctr)}, pos {d.position:.1f}" if d.position else
-            f"  - \"{d.key}\" — {_fmt_int(d.impressions)} imp, {_fmt_int(d.clicks)} clicks, "
+            f'  - "{d.key}" — {_fmt_int(d.impressions)} imp, {_fmt_int(d.clicks)} clicks, '
+            f"CTR {_fmt_pct(d.ctr)}, pos {d.position:.1f}"
+            if d.position
+            else f'  - "{d.key}" — {_fmt_int(d.impressions)} imp, {_fmt_int(d.clicks)} clicks, '
             f"CTR {_fmt_pct(d.ctr)}"
         )
     return "\n".join(lines)
 
 
 def _ai_summary(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
-    total_q = (db.query(func.coalesce(func.sum(AIOverviewImpressions.impressions), 0))
-               .filter(AIOverviewImpressions.domain == domain))
+    total_q = db.query(func.coalesce(func.sum(AIOverviewImpressions.impressions), 0)).filter(
+        AIOverviewImpressions.domain == domain
+    )
     if latest.get("ai_overview"):
         total_q = total_q.filter(AIOverviewImpressions.export_id == latest["ai_overview"])
     total = total_q.scalar()
-    per_page_q = (db.query(AIOverviewImpressions.key, AIOverviewImpressions.impressions)
-                  .filter(AIOverviewImpressions.domain == domain,
-                          AIOverviewImpressions.dim_type == "pages"))
+    per_page_q = db.query(AIOverviewImpressions.key, AIOverviewImpressions.impressions).filter(
+        AIOverviewImpressions.domain == domain, AIOverviewImpressions.dim_type == "pages"
+    )
     if latest.get("ai_overview"):
         per_page_q = per_page_q.filter(AIOverviewImpressions.export_id == latest["ai_overview"])
     per_page = per_page_q.order_by(AIOverviewImpressions.impressions.desc()).limit(5).all()
@@ -133,39 +140,52 @@ def _calls_summary(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
     scope = []
     if latest.get("call_tracking"):
         scope.append(CallTracking.export_id == latest["call_tracking"])
-    total = (db.query(func.count(CallTracking.id))
-             .filter(CallTracking.domain == domain, *scope).scalar()) or 0
+    total = (
+        db.query(func.count(CallTracking.id)).filter(CallTracking.domain == domain, *scope).scalar()
+    ) or 0
     if total == 0:
         return "(no call data)"
-    answered = (db.query(func.count(CallTracking.id))
-                .filter(CallTracking.domain == domain, CallTracking.status == "answered", *scope)
-                .scalar()) or 0
-    avg_dur = (db.query(func.avg(CallTracking.duration_seconds))
-               .filter(CallTracking.domain == domain, CallTracking.duration_seconds > 0, *scope)
-               .scalar()) or 0
-    top_query = (db.query(CallTracking.search_query)
-                 .filter(CallTracking.domain == domain, CallTracking.search_query.isnot(None),
-                         CallTracking.search_query != "", *scope)
-                 .limit(1).scalar()) or "—"
-    return (f"Calls: {total} total, {answered} answered, "
-            f"avg duration {int(avg_dur // 60)}m{int(avg_dur % 60):02d}s; "
-            f"top search query: \"{top_query}\"")
+    answered = (
+        db.query(func.count(CallTracking.id))
+        .filter(CallTracking.domain == domain, CallTracking.status == "answered", *scope)
+        .scalar()
+    ) or 0
+    avg_dur = (
+        db.query(func.avg(CallTracking.duration_seconds))
+        .filter(CallTracking.domain == domain, CallTracking.duration_seconds > 0, *scope)
+        .scalar()
+    ) or 0
+    top_query = (
+        db.query(CallTracking.search_query)
+        .filter(
+            CallTracking.domain == domain,
+            CallTracking.search_query.isnot(None),
+            CallTracking.search_query != "",
+            *scope,
+        )
+        .limit(1)
+        .scalar()
+    ) or "—"
+    return (
+        f"Calls: {total} total, {answered} answered, "
+        f"avg duration {int(avg_dur // 60)}m{int(avg_dur % 60):02d}s; "
+        f'top search query: "{top_query}"'
+    )
 
 
 def _leads_summary(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
-    row = (db.query(LeadSummary).filter(LeadSummary.domain == domain))
+    row = db.query(LeadSummary).filter(LeadSummary.domain == domain)
     if latest.get("lead_summary"):
         row = row.filter(LeadSummary.export_id == latest["lead_summary"])
     row = row.order_by(LeadSummary.id.desc()).first()
     if row:
         return f"Leads (week): {row.form_fills} form fills, {row.vapi_calls} VAPI calls"
-    row_all = (db.query(LeadSummary).filter(LeadSummary.domain == "all"))
+    row_all = db.query(LeadSummary).filter(LeadSummary.domain == "all")
     if latest.get("lead_summary"):
         row_all = row_all.filter(LeadSummary.export_id == latest["lead_summary"])
     row_all = row_all.order_by(LeadSummary.id.desc()).first()
     if row_all:
-        return (f"Leads (week aggregate): {row_all.form_fills} form fills, "
-                f"{row_all.vapi_calls} VAPI calls")
+        return f"Leads (week aggregate): {row_all.form_fills} form fills, {row_all.vapi_calls} VAPI calls"
     return "(no lead data)"
 
 
@@ -186,8 +206,7 @@ def _brand_health(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
     report_ids = [latest[k] for k in ("backlinks", "traffic") if latest.get(k)]
     parts = []
     for metric in ["domain_authority", "referring_domains", "backlinks"]:
-        q = db.query(DomainMetric.value).filter(
-            DomainMetric.domain == domain, DomainMetric.metric == metric)
+        q = db.query(DomainMetric.value).filter(DomainMetric.domain == domain, DomainMetric.metric == metric)
         if report_ids:
             q = q.filter(DomainMetric.export_id.in_(report_ids))
         val = q.order_by(DomainMetric.id.desc()).scalar()
@@ -203,21 +222,23 @@ def _brand_health(db: DBSession, domain: str, latest: dict[str, UUID]) -> str:
 def _competitor_snapshot(db: DBSession) -> str:
     lines = []
     for dom in COMPETITOR_DOMAINS:
-        latest = _latest_export_ids(db, dom)
+        latest = latest_export_ids(db, dom)
         report_ids = [latest[k] for k in ("backlinks", "traffic") if latest.get(k)]
         da_q = db.query(DomainMetric.value).filter(
-            DomainMetric.domain == dom, DomainMetric.metric == "domain_authority")
+            DomainMetric.domain == dom, DomainMetric.metric == "domain_authority"
+        )
         if report_ids:
             da_q = da_q.filter(DomainMetric.export_id.in_(report_ids))
         da = da_q.order_by(DomainMetric.id.desc()).scalar()
-        kw_q = (db.query(KeywordEstimate.keyword, KeywordEstimate.position, KeywordEstimate.est_visits)
-                .filter(KeywordEstimate.domain == dom))
+        kw_q = db.query(KeywordEstimate.keyword, KeywordEstimate.position, KeywordEstimate.est_visits).filter(
+            KeywordEstimate.domain == dom
+        )
         if latest.get("keyword_estimate"):
             kw_q = kw_q.filter(KeywordEstimate.export_id == latest["keyword_estimate"])
         kw = kw_q.order_by(KeywordEstimate.est_visits.desc().nullslast()).limit(1).first()
         parts = [f"DA {int(da)}" if da is not None else "DA —"]
         if kw and kw[1] is not None:
-            parts.append(f"top kw \"{kw[0]}\" pos {kw[1]:.0f}, ~{_fmt_int(kw[2])} visits")
+            parts.append(f'top kw "{kw[0]}" pos {kw[1]:.0f}, ~{_fmt_int(kw[2])} visits')
         lines.append(f"  - {dom}: {', '.join(parts)}")
     if not lines:
         return ""
@@ -233,12 +254,12 @@ def build_market_context(db: DBSession, brand: str) -> tuple[str, list[dict]]:
     if not domain:
         return "", []
 
-    latest = _latest_export_ids(db, domain)
+    latest = latest_export_ids(db, domain)
 
     _, pf, pt = _get_export_period(db, domain)
     period_label = ""
     if pf and pt:
-        period_label = f"Week {pf.month}/{pf.day}–{pt.month}/{pt.day}/{pt.year}"
+        period_label = f"Week {pf.month}/{pf.day}-{pt.month}/{pt.day}/{pt.year}"
     elif pf:
         period_label = f"Week starting {pf.month}/{pf.day}/{pf.year}"
 
@@ -257,9 +278,11 @@ def build_market_context(db: DBSession, brand: str) -> tuple[str, list[dict]]:
         blocks.append(comp)
 
     context = "\n\n".join(b for b in blocks if b)
-    provenance = [{
-        "doc_number": "MARKET",
-        "title": f"External market data ({period_label or 'latest import'})",
-        "version": None,
-    }]
+    provenance = [
+        {
+            "doc_number": "MARKET",
+            "title": f"External market data ({period_label or 'latest import'})",
+            "version": None,
+        }
+    ]
     return context, provenance

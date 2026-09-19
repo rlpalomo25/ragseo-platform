@@ -4,14 +4,17 @@ All rows hang off an ``external_exports`` row that records which weekly export
 file they came from (unique by file hash) so re-imports are idempotent and
 every number keeps provenance (Doc 329/C17-style) for agent decisions.
 """
+
 import uuid
-from datetime import datetime, date, timezone
-from sqlalchemy import Column, String, Text, Integer, Float, DateTime, Date, ForeignKey, Uuid, Index
+from datetime import UTC, datetime
+
+from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, Uuid
+
 from app.database import Base
 
 
 def _now():
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class ExternalExport(Base):
@@ -34,11 +37,13 @@ class ExternalExport(Base):
 
 class SearchConsoleDim(Base):
     """GSC top queries / pages / countries / devices / search appearance."""
+
     __tablename__ = "search_console_dims"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     dim_type = Column(String(20), nullable=False)
     key = Column(String(500), nullable=False)
@@ -54,8 +59,9 @@ class SearchConsoleDaily(Base):
     __tablename__ = "search_console_daily"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     day = Column(Date, nullable=False)
     clicks = Column(Integer, nullable=False, default=0)
@@ -68,8 +74,9 @@ class AIOverviewImpressions(Base):
     __tablename__ = "ai_overview_impressions"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     dim_type = Column(String(20), nullable=False)
     key = Column(String(255))
@@ -79,11 +86,13 @@ class AIOverviewImpressions(Base):
 
 class KeywordEstimate(Base):
     """Ubersuggest KBT keyword tables."""
+
     __tablename__ = "keyword_estimates"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     keyword = Column(String(500), nullable=False)
     volume = Column(Integer)
@@ -100,8 +109,9 @@ class Backlink(Base):
     __tablename__ = "backlinks"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     source_title = Column(Text)
     source_url = Column(Text)
@@ -118,8 +128,9 @@ class TopPage(Base):
     __tablename__ = "top_pages"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     url = Column(Text)
     title = Column(Text)
@@ -131,8 +142,9 @@ class CallTracking(Base):
     __tablename__ = "call_tracking"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     name = Column(String(255))
     customer_number = Column(String(50))
@@ -153,8 +165,9 @@ class LeadSummary(Base):
     __tablename__ = "lead_summaries"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     week_start = Column(Date)
     week_end = Column(Date)
@@ -166,8 +179,9 @@ class GA4Event(Base):
     __tablename__ = "ga4_events"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     event_name = Column(String(100), nullable=False)
     event_count = Column(Integer, nullable=False, default=0)
@@ -180,11 +194,13 @@ class GA4Event(Base):
 
 class DomainReport(Base):
     """Ubersuggest PDF reports exported as markdown (traffic / backlink overviews)."""
+
     __tablename__ = "domain_reports"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False)
     report_type = Column(String(20), nullable=False)
     source_file = Column(String(500))
@@ -193,11 +209,13 @@ class DomainReport(Base):
 
 class DomainMetric(Base):
     """Key-value metrics mined from report markdown (DA, backlinks, ref domains, visits)."""
+
     __tablename__ = "domain_metrics"
 
     id = Column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    export_id = Column(Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"),
-                       nullable=False, index=True)
+    export_id = Column(
+        Uuid(as_uuid=True), ForeignKey("external_exports.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     domain = Column(String(255), nullable=False, index=True)
     metric = Column(String(50), nullable=False)
     value = Column(Float)

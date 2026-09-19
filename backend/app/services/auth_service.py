@@ -1,13 +1,14 @@
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
+
 import bcrypt
 from sqlalchemy.orm import Session as DBSession
-from app.models.user import User, Session
-from app.config import get_settings
 
+from app.config import DEFAULT_ADMIN_PASSWORD_PLACEHOLDER, get_settings
+from app.models.user import Session, User
 
 settings = get_settings()
 
@@ -50,10 +51,15 @@ def create_session(db: DBSession, user_id: UUID) -> tuple[Session, str]:
     If the user already has the max number of active sessions, the oldest one
     is revoked before creating the new one."""
     # Revoke oldest existing session if at max capacity
-    existing = db.query(Session).filter(
-        Session.user_id == user_id,
-        Session.expires_at > datetime.now(timezone.utc),
-    ).order_by(Session.created_at.asc()).all()
+    existing = (
+        db.query(Session)
+        .filter(
+            Session.user_id == user_id,
+            Session.expires_at > datetime.now(UTC),
+        )
+        .order_by(Session.created_at.asc())
+        .all()
+    )
 
     if len(existing) >= SESSION_MAX_PER_USER:
         for old in existing[: len(existing) - SESSION_MAX_PER_USER + 1]:
@@ -61,7 +67,7 @@ def create_session(db: DBSession, user_id: UUID) -> tuple[Session, str]:
         db.commit()
 
     token = secrets.token_hex(32)
-    expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.session_expiry_hours)
+    expires_at = datetime.now(UTC) + timedelta(hours=settings.session_expiry_hours)
     session = Session(user_id=user_id, token=token, expires_at=expires_at)
     db.add(session)
     db.commit()
@@ -74,13 +80,17 @@ def get_user_by_token(db: DBSession, signed_token: str) -> User | None:
     raw_token = _unsign(signed_token)
     if not raw_token:
         return None
-    session = db.query(Session).filter(
-        Session.token == raw_token,
-        Session.expires_at > datetime.now(timezone.utc),
-    ).first()
+    session = (
+        db.query(Session)
+        .filter(
+            Session.token == raw_token,
+            Session.expires_at > datetime.now(UTC),
+        )
+        .first()
+    )
     if not session:
         return None
-    user = db.query(User).filter(User.id == session.user_id, User.is_active == True).first()
+    user = db.query(User).filter(User.id == session.user_id, User.is_active).first()
     return user
 
 
@@ -95,7 +105,7 @@ def delete_session(db: DBSession, signed_token: str) -> bool:
 
 def prune_expired_sessions(db: DBSession) -> int:
     """Delete all expired sessions and return the count of deleted rows."""
-    result = db.query(Session).filter(Session.expires_at < datetime.now(timezone.utc)).delete()
+    result = db.query(Session).filter(Session.expires_at < datetime.now(UTC)).delete()
     db.commit()
     return result
 
@@ -104,7 +114,10 @@ def create_default_admin(db: DBSession) -> User | None:
     existing = db.query(User).filter(User.username == settings.default_admin_username).first()
     if existing:
         return None
-    if settings.environment == "production" and settings.default_admin_password == "changeme":
+    if (
+        settings.environment == "production"
+        and settings.default_admin_password == DEFAULT_ADMIN_PASSWORD_PLACEHOLDER
+    ):
         raise RuntimeError(
             "Refusing to seed default admin with default password in production. "
             "Set DEFAULT_ADMIN_PASSWORD to a strong value first."

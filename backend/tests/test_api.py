@@ -1,5 +1,6 @@
-import pytest
 from uuid import uuid4
+
+import pytest
 
 from tests.conftest import login
 
@@ -21,8 +22,8 @@ def test_list_documents_empty(client, writer_headers):
 
 
 def test_list_documents_includes_chunk_coverage(client, writer_headers, db_session):
-    from app.models.document import Document
     from app.models.chunk import DocChunk
+    from app.models.document import Document
 
     doc = Document(
         doc_number="100",
@@ -33,10 +34,28 @@ def test_list_documents_includes_chunk_coverage(client, writer_headers, db_sessi
     )
     db_session.add(doc)
     db_session.flush()
-    db_session.add(DocChunk(document_id=doc.id, chunk_index=0, heading_path="", content="a" * 20,
-                            token_count=5, content_hash="h1", embedding=None))
-    db_session.add(DocChunk(document_id=doc.id, chunk_index=1, heading_path="", content="b" * 20,
-                            token_count=5, content_hash="h2", embedding=[0.1] * 768))
+    db_session.add(
+        DocChunk(
+            document_id=doc.id,
+            chunk_index=0,
+            heading_path="",
+            content="a" * 20,
+            token_count=5,
+            content_hash="h1",
+            embedding=None,
+        )
+    )
+    db_session.add(
+        DocChunk(
+            document_id=doc.id,
+            chunk_index=1,
+            heading_path="",
+            content="b" * 20,
+            token_count=5,
+            content_hash="h2",
+            embedding=[0.1] * 768,
+        )
+    )
     db_session.commit()
 
     body = client.get("/api/docs").json()
@@ -46,8 +65,8 @@ def test_list_documents_includes_chunk_coverage(client, writer_headers, db_sessi
 
 
 def test_document_detail_includes_chunk_coverage(client, writer_headers, db_session):
-    from app.models.document import Document
     from app.models.chunk import DocChunk
+    from app.models.document import Document
 
     doc = Document(
         doc_number="101",
@@ -58,8 +77,17 @@ def test_document_detail_includes_chunk_coverage(client, writer_headers, db_sess
     )
     db_session.add(doc)
     db_session.flush()
-    db_session.add(DocChunk(document_id=doc.id, chunk_index=0, heading_path="", content="c" * 20,
-                            token_count=5, content_hash="h", embedding=[0.1] * 768))
+    db_session.add(
+        DocChunk(
+            document_id=doc.id,
+            chunk_index=0,
+            heading_path="",
+            content="c" * 20,
+            token_count=5,
+            content_hash="h",
+            embedding=[0.1] * 768,
+        )
+    )
     db_session.commit()
 
     body = client.get(f"/api/docs/{doc.id}").json()
@@ -89,13 +117,15 @@ def test_agents_endpoint_requires_writer_role(client, test_user):
 def test_search_falls_back_to_keyword_without_chunks(client, writer_headers, db_session):
     from app.models.document import Document
 
-    db_session.add(Document(
-        doc_number="100",
-        title="Master Content Doctrine",
-        filename="Doc 100_ Master Content Doctrine.md",
-        content="The master doctrine of content production.",
-        status="active",
-    ))
+    db_session.add(
+        Document(
+            doc_number="100",
+            title="Master Content Doctrine",
+            filename="Doc 100_ Master Content Doctrine.md",
+            content="The master doctrine of content production.",
+            status="active",
+        )
+    )
     db_session.commit()
 
     response = client.get("/api/docs/search", params={"q": "doctrine"})
