@@ -118,23 +118,39 @@ User asked: apply the 101-rule book (Sutter & Alexandrescu; summary at `https://
 - Frontend `tsc --noEmit` + `next lint`: NOT run — this env has no Node/npm and `node_modules` is absent. Run locally before pushing.
 
 ## Next Move
-1. **All audit fixes 1–8 DONE (wave 1 committed as `025f44d`, wave 2 this session uncommitted); cleanup + LICENSE uncommitted; NOT deployed**: before push, run locally (no Node here): `cd frontend && npx tsc --noEmit && npm run lint`. Fill LICENSE placeholders (`[DATE]`, licensing contact). Then commit + `git push origin main`, VPS `git pull origin main && docker compose -f docker-compose.prod.yml build backend frontend && docker compose -f docker-compose.prod.yml up -d` (per `prompts/03-push-redeploy.md`). Migrations 0005/0006/0007 run on backend boot (`alembic upgrade head` in entrypoint).
+1. **Push + deploy `2738159`** (wave-2 + best-practice cleanup, committed 2026-09-19,
+   **NOT pushed/deployed**): `git push origin main`, then on the VPS
+   `cd /opt/ragseo-platform && git pull origin main && docker compose -f docker-compose.prod.yml build backend frontend && docker compose -f docker-compose.prod.yml up -d`
+   per `prompts/03-push-redeploy.md`. Migrations 0005–0008 run on backend boot.
+   Behavior-neutral: new `voyage_api_url` setting defaults to the same URL → **no
+   `.env` change needed**. Smoke-test (`/api/health` → 200, `/openapi.json`,
+   writer-protected delete → 401).
 2. Weekly routine: use WEEKLY_GSC_IMPORT_PROMPT.md + prompts/01-04 (website upload primary).
-3. Optional future: Doc 307 dedicated SERP agent via `app/tasks.py:AGENT_FUNCTIONS`.
+3. Optional future: Doc 307 SERP agent via `app/tasks.py:AGENT_FUNCTIONS`.
+4. **Frontend unverified this session (no Node here)**: before the next frontend
+   deploy, run `cd frontend && npx tsc --noEmit && npm run lint` on a Node
+   machine; optional DRY refactors still open (shared dashboard layout across the
+   8 page shells, status-variant map consolidation, repeated Tailwind input class
+   string, duplicated slugify + embedding-coverage bar).
 
-## Open items captured this session (2026-09-18)
-- **wave 2 changes need test-command note**: suite is now Redis-free via conftest autouse
-  `no_celery_broker` (monkeypatches `run_agent_task.delay`). Run with
-  `DATABASE_URL=sqlite:///:memory: PYTHONPATH=/tmp/opencode/ragseo-deps python3 -m pytest`
-  (psycopg2 not needed). Baseline reproduced: 163 → **173 passed**.
-- **Token/no-secrets hygiene**: repo is private but `.env` values are in `.gitignore`;
-  do NOT commit local `.env`. VPS prod values: `/tmp/opencode/server.env`.
-- Deploy SOP migrated from rsync → git (private `github.com/rlpalomo25/ragseo-platform`,
-  VPS read-only deploy key). Never push dev `.env` (rsync-era clobber incident documented).
-- **Uncommitted working tree (NOT pushed)**: fix wave 2 (orchestrator sweeper/resume window,
-  tasks aliases, beat schedule, doc_number partial unique index), ruff cleanup, LICENSE,
-  README License section, `.gitignore` update, new `test_tasks.py` + `backend/pyproject.toml`.
-  Commit + deploy when authorized (`025f44d` = wave 1 only).
+## Open items captured this session (2026-09-19)
+- **Best-practice cleanup committed `2738159`, working tree clean, NOT deployed.
+  VPS still runs `2a8edf3`** (health verified 200 at session start). Cleanup done:
+  `session_scope()` ctx manager (`app/database.py`, used by `tasks.py`),
+  `latest_export_ids` made public & shared by `external_data`/`learning_loop`
+  (killed the duplicate copy), `voyage_api_url` setting (SPOD), `print()`→logger,
+  silent catches fixed (learning_loop, EditUserModal, logout), dead code removed
+  (`get_doctrine_context`, `Toast.tsx`, `Modal.contentRef`), auth cookie
+  `max_age` from `settings.session_expiry_hours`, alembic E501 per-file-ignored.
+  Tests: **183 passed**; `ruff check` clean; `ruff format` 201 files.
+- **Frontend has NO Node in this env** — all frontend edits were manual-review
+  surgical only; `tsc --noEmit`/`next lint` must run locally before pushing the
+  frontend image. Flagged refactors: shared dashboard layout (8 × duplicated
+  AuthGuard+Sidebar+Header shell), status-variant maps, api.ts EXTRA DRY.
+- **Rename ripple**: tests patch `tasks.session_scope` (was `tasks.SessionLocal`);
+  `tests/test_external_data.py` imports `latest_export_ids`. Don't regress either.
+- Deploy SOP is git-driven (private `github.com/rlpalomo25/ragseo-platform`, VPS
+  read-only deploy key); never push dev `.env`. Prod values: `/tmp/opencode/server.env`.
 
 ## Relevant Files
 - Importer: `backend/app/services/external_ingest.py` · service: `backend/app/services/external_data.py` · models: `backend/app/models/external.py` · migration: `backend/alembic/versions/0004_external_data.py` · router: `backend/app/routers/ingest.py` · CLI: `backend/scripts/import_external.py` · agents: `backend/app/services/agents/{writer,router}.py`
