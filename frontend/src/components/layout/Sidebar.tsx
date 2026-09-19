@@ -9,6 +9,7 @@ const navItems = [
   { href: "/docs", label: "Doctrine", icon: "📖" },
   { href: "/exports", label: "Weekly Exports", icon: "📤" },
   { href: "/jobs", label: "Pipeline", icon: "🔄" },
+  { href: "/learning", label: "Performance", icon: "📈" },
   { href: "/agents", label: "Agents", icon: "🤖" },
 ];
 

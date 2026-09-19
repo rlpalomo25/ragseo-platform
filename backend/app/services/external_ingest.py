@@ -36,6 +36,7 @@ from app.models.external import (
     DomainReport,
     DomainMetric,
 )
+from app.models.learning import ContentPerformanceSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -821,6 +822,11 @@ def delete_external_export(db, export) -> None:
     """
     for model in DETAIL_MODELS:
         db.query(model).filter(model.export_id == export.id).delete(synchronize_session=False)
+    # Learning-loop snapshots anchor on source_export_id (not export_id); their
+    # rows become stale the moment the underlying weekly data is removed.
+    db.query(ContentPerformanceSnapshot).filter(
+        ContentPerformanceSnapshot.source_export_id == export.id
+    ).delete(synchronize_session=False)
     db.delete(export)
 
 

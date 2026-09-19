@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import get_settings
 from app.database import SessionLocal
 from app.services.external_ingest import import_external_folder
+from app.services.learning_loop import snapshot_publications
 
 
 def main():
@@ -31,6 +32,11 @@ def main():
             by_status[r["status"]] = by_status.get(r["status"], 0) + 1
         print(f"\nTotal: {len(results)} files -> " +
               ", ".join(f"{k}: {v}" for k, v in sorted(by_status.items())))
+        learning = snapshot_publications(db)
+        print(
+            f"Learning loop: {learning.get('snapshots', 0)} snapshots, "
+            f"{learning.get('signals', 0)} signals"
+        )
         if by_status.get("error"):
             sys.exit(1)
     finally:

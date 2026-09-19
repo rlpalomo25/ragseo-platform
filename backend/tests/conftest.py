@@ -17,6 +17,7 @@ from app.models.document import Document, DocReference
 from app.models.agent_task import AgentTask
 from app.models.chunk import DocChunk
 from app.models.job import AgentJob, JobStage
+from app.models.learning import ContentPerformanceSnapshot, ContentPublication, LearningSignal
 from app.models.external import (  # noqa: F401
     ExternalExport,
     SearchConsoleDim,
@@ -63,6 +64,9 @@ ALL_TABLES = [
     GA4Event.__table__,
     DomainReport.__table__,
     DomainMetric.__table__,
+    ContentPublication.__table__,
+    ContentPerformanceSnapshot.__table__,
+    LearningSignal.__table__,
 ]
 
 

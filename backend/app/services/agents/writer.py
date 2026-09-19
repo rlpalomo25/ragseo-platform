@@ -20,6 +20,7 @@ from app.services.doctrine import (
 )
 from app.services.agent_runner import build_retrieval_context
 from app.services.external_data import build_market_context
+from app.services.learning_loop import build_learning_context
 from app.services.agents.llm_output import (
     CONTENT_DELIMITER,
     META_DELIMITER,
@@ -105,6 +106,7 @@ def run_writer(db: DBSession, input_data: dict) -> dict:
 
     # 3. Market data (GSC/GA4/calls/leads/competitors) if available.
     market_context, market_sources = build_market_context(db, brand) if brand else ("", [])
+    learning_context, learning_sources = build_learning_context(db, brand) if brand else ("", [])
 
     user_message = f"""## Governing Doctrine (source of truth — comply exactly)
 {governing_context}
@@ -113,6 +115,8 @@ def run_writer(db: DBSession, input_data: dict) -> dict:
 {supplement_context if extra_sources else "(none beyond governing docs)"}
 
 {f"## Supporting Market Data" + chr(10) + market_context if market_context else ""}
+
+{f"## Performance Memory — what past published content measured (be informed, do NOT copy)" + chr(10) + learning_context if learning_context else ""}
 
 ## Writing Request
 {request_text}
@@ -148,5 +152,6 @@ Content type: {content_type or "determine from request"}
         "provenance": provenance,
         "supplementary_sources": extra_sources,
         "market_sources": market_sources,
+        "learning_sources": learning_sources,
         "output": {**meta, "content_markdown": content_markdown},
     }

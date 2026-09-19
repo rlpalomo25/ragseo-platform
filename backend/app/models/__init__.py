@@ -1,5 +1,6 @@
 from app.models.user import User, Session
 from app.models.document import Document, DocReference
+from app.models.learning import ContentPerformanceSnapshot, ContentPublication, LearningSignal
 from app.models.external import (
     ExternalExport,
     SearchConsoleDim,
@@ -17,6 +18,7 @@ from app.models.external import (
 
 __all__ = [
     "User", "Session", "Document", "DocReference",
+    "ContentPublication", "ContentPerformanceSnapshot", "LearningSignal",
     "ExternalExport", "SearchConsoleDim", "SearchConsoleDaily",
     "AIOverviewImpressions", "KeywordEstimate", "Backlink", "TopPage",
     "CallTracking", "LeadSummary", "GA4Event", "DomainReport", "DomainMetric",

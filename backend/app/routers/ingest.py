@@ -30,6 +30,7 @@ from app.services.external_ingest import (
     file_sha256,
     delete_external_export,
 )
+from app.services.learning_loop import snapshot_publications
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -314,6 +315,11 @@ def import_external(admin: User = Depends(require_admin), db: DBSession = Depend
     results = []
     for folder in folders:
         results.extend(import_external_folder(folder, db))
+
+    # Learning loop: refresh per-publication performance snapshots now that the
+    # weekly numbers landed (idempotent; one snapshot per publication+export).
+    learning = snapshot_publications(db)
+    logger.info("Learning loop after import: %s", learning)
     seen: dict[str, dict] = {}
     for r in results:
         if r["status"] == "imported" or r["filename"] not in seen:
@@ -364,6 +370,8 @@ async def upload_external(
         except Exception as e:  # noqa: BLE001 - one bad file never blocks the rest
             logger.warning("Failed to import uploaded %s: %s", p.name, e)
             results.append({"filename": p.name, "status": "error", "error": str(e)})
+    learning = snapshot_publications(db)
+    logger.info("Learning loop after upload: %s", learning)
     resp = ExternalImportResultResponse(message=f"Uploaded and imported {len(results)} file(s)", files=[])
     for r in results:
         resp.files.append(ExternalImportItem(

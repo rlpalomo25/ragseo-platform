@@ -10,8 +10,12 @@ import { SkipLink } from "@/components/ui/SkipLink";
 import { Spinner } from "@/components/ui/Spinner";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { useJob, jobAction } from "@/lib/hooks/useJobs";
-import { jobStatusVariant, type StageDetail } from "@/types/job";
+import { registerPublication, usePublications } from "@/lib/hooks/useLearning";
+import { jobStatusVariant, type JobDetail, type StageDetail } from "@/types/job";
+import { FLAG_LABELS, flagBadgeVariant, type Publication } from "@/types/learning";
 
 const AGENT_LABELS: Record<string, string> = {
   router: "Router",
@@ -141,6 +145,8 @@ function JobDetailContent() {
         </div>
       )}
 
+      <PublishedContentPanel job={job} />
+
       <h2 className="mb-3 mt-6 text-lg font-semibold text-gray-900">Stages</h2>
       <ol className="space-y-3">
         {job.stages.map((stage, idx) => (
@@ -195,6 +201,167 @@ function stageVariant(status: string): "success" | "warning" | "danger" | "info"
     default:
       return "default";
   }
+}
+
+function PublishedContentPanel({ job }: { job: JobDetail }) {
+  const { publications, isLoading, mutate } = usePublications();
+  const pub = publications.find((p) => p.job_id === job.id);
+  const [url, setUrl] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [pubDate, setPubDate] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState(false);
+
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      setSaving(true);
+      setError("");
+      setDone(false);
+      try {
+        await registerPublication(job.id, {
+          url: url.trim(),
+          target_keyword: keyword.trim() || undefined,
+          publish_date: pubDate || undefined,
+        });
+        setDone(true);
+        await mutate();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to link publication");
+      } finally {
+        setSaving(false);
+      }
+    },
+    [job.id, url, keyword, pubDate, mutate]
+  );
+
+  if (isLoading) {
+    return (
+      <Card className="mt-4">
+        <CardHeader>
+          <h2 className="text-sm font-semibold text-gray-900">Published Content</h2>
+        </CardHeader>
+        <CardContent>
+          <Spinner size="sm" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (pub) {
+    return (
+      <Card className="mt-4">
+        <CardHeader className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-gray-900">Published Content</h2>
+          <Badge variant="success">tracking</Badge>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm font-medium text-gray-900">{pub.publish_url}</p>
+          <p className="mt-1 text-xs text-gray-500">
+            {pub.target_keyword ? `Target keyword: ${pub.target_keyword}` : "No target keyword"}
+            {pub.publish_date ? ` · Published ${pub.publish_date}` : ""}
+          </p>
+          <SnapshotMetrics snapshot={pub.latest} />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (job.status !== "approved") return null;
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <h2 className="text-sm font-semibold text-gray-900">Published Content</h2>
+      </CardHeader>
+      <CardContent>
+        <p className="mb-3 text-xs text-gray-500">
+          Link this job to the URL it went live on. Weekly GSC / AI-Overview / GA4 / calls data will be
+          measured against it and recalled as Performance Memory for future briefs (Doc 203 §7.0).
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <Input
+            label="Published URL"
+            name="publish_url"
+            type="url"
+            required
+            placeholder="https://example.com/slug/"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Input
+              label="Target keyword (optional)"
+              name="target_keyword"
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+            />
+            <Input
+              label="Publish date (optional)"
+              name="publish_date"
+              type="date"
+              value={pubDate}
+              onChange={(e) => setPubDate(e.target.value)}
+            />
+          </div>
+          {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
+          {done && (
+            <p className="text-sm text-green-600" role="status">
+              Publication linked — tracking started.
+            </p>
+          )}
+          <div className="flex justify-end">
+            <Button type="submit" loading={saving}>Link Publication</Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SnapshotMetrics({ snapshot }: { snapshot: Publication["latest"] }) {
+  if (!snapshot) {
+    return (
+      <p className="mt-3 text-xs text-gray-500">
+        No performance snapshot yet — it will appear after the next weekly exports import.
+      </p>
+    );
+  }
+  return (
+    <div className="mt-3 rounded border border-gray-100 bg-gray-50 p-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-700">
+        {snapshot.position != null && (
+          <span>Pos <strong>{snapshot.position.toFixed(1)}</strong></span>
+        )}
+        <span>{snapshot.impressions.toLocaleString()} imp</span>
+        <span>{snapshot.clicks.toLocaleString()} clicks</span>
+        {snapshot.ctr != null && <span>CTR <strong>{snapshot.ctr.toFixed(1)}%</strong></span>}
+        <span>{snapshot.ai_overview_impressions} AI-imp</span>
+        <span>{snapshot.calls} calls</span>
+        {snapshot.movement != null && (
+          <span
+            className={
+              snapshot.movement > 0
+                ? "font-medium text-red-600"
+                : "font-medium text-green-600"
+            }
+          >
+            {snapshot.movement > 0 ? "▼" : "▲"} {Math.abs(snapshot.movement).toFixed(1)} pos
+          </span>
+        )}
+      </div>
+      {snapshot.flags.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {snapshot.flags.map((flag) => (
+            <span key={flag} title={FLAG_LABELS[flag] ?? flag}>
+              <Badge variant={flagBadgeVariant(flag)}>{flag}</Badge>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function StageCard({ stage }: { stage: StageDetail }) {
