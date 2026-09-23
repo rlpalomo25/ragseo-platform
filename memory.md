@@ -118,16 +118,15 @@ User asked: apply the 101-rule book (Sutter & Alexandrescu; summary at `https://
 - Frontend `tsc --noEmit` + `next lint`: NOT run — this env has no Node/npm and `node_modules` is absent. Run locally before pushing.
 
 ## Next Move
-1. **Push + deploy `2738159`** (wave-2 + best-practice cleanup, committed 2026-09-19,
-   **NOT pushed/deployed**): `git push origin main`, then on the VPS
-   `cd /opt/ragseo-platform && git pull origin main && docker compose -f docker-compose.prod.yml build backend frontend && docker compose -f docker-compose.prod.yml up -d`
-   per `prompts/03-push-redeploy.md`. Migrations 0005–0008 run on backend boot.
-   Behavior-neutral: new `voyage_api_url` setting defaults to the same URL → **no
-   `.env` change needed**. Smoke-test (`/api/health` → 200, `/openapi.json`,
-   writer-protected delete → 401).
+1. ✅ **DEPLOYED 2026-09-23**: pushed to `origin/main` (head `a176a9e`) via PAT and
+   redeployed on the VPS — `docker compose -f docker-compose.prod.yml build backend frontend
+   && up -d` ✅ **completed**. Smoke-tests pass: `/api/health` → 200, `/openapi.json`
+   serves the full schema (new `/api/ingest/external/{upload,delete}` present; migrations
+   0005–0008 ran on boot). VPS now runs `a176a9e`. (Writer-protected delete → 401 still
+   needs an authed check; the endpoint is visible in openapi.)
 2. Weekly routine: use WEEKLY_GSC_IMPORT_PROMPT.md + prompts/01-04 (website upload primary).
 3. Optional future: Doc 307 SERP agent via `app/tasks.py:AGENT_FUNCTIONS`.
-4. **Frontend unverified this session (no Node here)**: before the next frontend
+4. **Frontend still unverified (no Node here)**: before the next frontend
    deploy, run `cd frontend && npx tsc --noEmit && npm run lint` on a Node
    machine; optional DRY refactors still open (shared dashboard layout across the
    8 page shells, status-variant map consolidation, repeated Tailwind input class
