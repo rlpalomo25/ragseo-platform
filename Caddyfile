@@ -14,6 +14,16 @@
 :80 {
     encode zstd gzip
 
+    # Security headers (HSTS deferred until TLS/domain lands).
+    header {
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+        -X-Powered-By
+    }
+
     handle /api/* {
         reverse_proxy backend:8000
     }

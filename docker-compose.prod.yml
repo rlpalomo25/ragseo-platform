@@ -1,5 +1,7 @@
 services:
   db:
+    # pg16 already pins the major.minor; the codename base (bookworm/trixie)
+    # tracks security patches within pg16.
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ragseo
@@ -13,18 +15,24 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.34.3
     # ollama/ollama sets ENTRYPOINT ["/bin/ollama"], so the shell must be
     # invoked via an explicit entrypoint override (else CMD becomes "ollama sh").
     entrypoint: ["/bin/sh", "-c"]
@@ -45,6 +53,9 @@ services:
       retries: 10
       start_period: 180s
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   backend:
     build: ./backend
@@ -86,6 +97,17 @@ services:
       ollama:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      # True liveness: the entrypoint runs migrations before uvicorn binds, so
+      # "unhealthy" also surfaces migration failures.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=5).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
   celery-worker:
     build: ./backend
@@ -112,21 +134,40 @@ services:
       ollama:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      # inspect ping round-trips through the broker and fails if no worker
+      # answers; a task stuck mid-run still pings, so this is liveness only.
+      test: ["CMD", "celery", "-A", "app.celery_app", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "3" }
 
   frontend:
     build: ./frontend
     # Next.js inlines NEXT_PUBLIC_* at build time; leaving it unset keeps the
     # api.ts fallback "" (Prompt 4) so all calls stay same-origin through Caddy.
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
   caddy:
     image: caddy:2-alpine
     ports:
       - "80:80"
-      - "443:443"
-      - "443:443/udp"
     environment:
       DOMAIN: ${DOMAIN:-example.com}
     volumes:
@@ -134,9 +175,20 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - backend
-      - frontend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/api/health && wget -q -O /dev/null http://localhost/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
 volumes:
   pgdata:

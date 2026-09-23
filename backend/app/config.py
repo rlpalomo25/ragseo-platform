@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 # Sentinel value used for the default admin password when none is supplied; the
@@ -61,6 +62,29 @@ class Settings(BaseSettings):
         if self.embedding_provider == "ollama":
             return bool(self.ollama_base_url)
         return False
+
+    @model_validator(mode="after")
+    def _fail_fast_on_default_secrets_in_production(self) -> "Settings":
+        # A redeploy with a lost/missing .env silently falls back to the
+        # placeholder defaults below. In production that is a known-credential
+        # exposure, so refuse to boot instead. Runs at Settings() construction,
+        # which happens eagerly in main.py / celery_app.py / database.py.
+        if self.environment != "production":
+            return self
+        problems: list[str] = []
+        if self.secret_key == "change-this-to-a-random-string":
+            problems.append("SECRET_KEY is still the default placeholder")
+        if "changeme" in self.database_url:
+            problems.append("DATABASE_URL still uses the default password 'changeme'")
+        if self.default_admin_password == DEFAULT_ADMIN_PASSWORD_PLACEHOLDER:
+            problems.append("DEFAULT_ADMIN_PASSWORD is still the default placeholder")
+        if problems:
+            raise ValueError(
+                "Refusing to start with ENVIRONMENT=production and insecure defaults: "
+                + "; ".join(problems)
+                + ". Set real values in the .env file."
+            )
+        return self
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
