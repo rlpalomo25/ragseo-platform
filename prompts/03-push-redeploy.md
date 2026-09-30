@@ -20,12 +20,23 @@ git push origin main
 ```
 cd /opt/ragseo-platform
 git pull origin main
-docker compose -f docker-compose.prod.yml build backend
-docker compose -f docker-compose.prod.yml build frontend
+docker compose -f docker-compose.prod.yml build backend celery-worker frontend
 docker compose -f docker-compose.prod.yml up -d
 ```
 
 Wait for the backend container to become healthy before continuing.
+
+`celery-worker` is a **required** build target, not an optional one. It shares the
+`ragseo-backend:local` tag with `backend`, so listing both keeps the API and the
+worker on the same app code; omitting it risks a split-brain where the worker runs
+a stale `app/services/orchestrator.py`. Verify convergence after the deploy:
+
+```bash
+docker compose -f docker-compose.prod.yml ps
+docker inspect -f '{{.Image}}' ragseo-platform-backend-1 ragseo-platform-celery-worker-1
+```
+
+Both image IDs must match.
 
 ## Smoke test
 
@@ -56,8 +67,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://157.230.2.51/api/inges
   a fresh clone builds self-contained. The raw weekly dump `09042026/` stays out
   of git; to refresh the baked seed run `cd backend && ./scripts/sync_doctrine.sh`
   then commit the resulting `backend/external` + `backend/doctrine` changes.
-- Rebuild `backend` when requirements/app code changes (e.g. `python-multipart`,
-  new routes). `celery-worker` shares the `build: ./backend` recipe.
+- Rebuild `backend` **and** `celery-worker` when requirements/app code changes
+  (e.g. `python-multipart`, new routes). Both build the same `./backend` context
+  and share the `ragseo-backend:local` tag, so they always run identical code.
 - Rebuild `frontend` on any UI/pages change — prod frontend has no bind mount.
 - `up -d` applies changes idempotently; unchanged services keep running.
 - Add `sudo` to the docker commands if the VPS docker context needs elevation.

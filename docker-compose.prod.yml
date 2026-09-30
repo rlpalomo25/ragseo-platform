@@ -58,6 +58,11 @@ services:
       options: { max-size: "20m", max-file: "3" }
 
   backend:
+    # Shared tag with celery-worker: both build the same ./backend context, so
+    # they MUST converge on one image or the worker runs stale app code
+    # (split-brain API/worker). Build with:
+    #   docker compose -f docker-compose.prod.yml build backend celery-worker frontend
+    image: ragseo-backend:local
     build: ./backend
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
@@ -110,6 +115,10 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   celery-worker:
+    # Same tag as backend on purpose — see the note there. Without this the two
+    # services build independent tags and `build backend` alone leaves the worker
+    # on an old image.
+    image: ragseo-backend:local
     build: ./backend
     command: celery -A app.celery_app worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-2}
     environment:
