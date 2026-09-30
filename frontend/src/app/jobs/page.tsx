@@ -134,7 +134,7 @@ function JobRow({ job, onMutate }: { job: JobSummary; onMutate: () => void }) {
   const [actionError, setActionError] = useState("");
 
   const act = useCallback(
-    async (action: "approve" | "cancel", e: React.MouseEvent) => {
+    async (action: "approve" | "cancel" | "retry", e: React.MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       setActing(action);
@@ -153,6 +153,7 @@ function JobRow({ job, onMutate }: { job: JobSummary; onMutate: () => void }) {
 
   const canApprove = job.status === "awaiting_approval";
   const canCancel = job.status === "running" || job.status === "awaiting_approval";
+  const canRetry = job.status === "failed" || job.status === "cancelled";
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm transition-colors hover:bg-gray-50">
@@ -193,6 +194,16 @@ function JobRow({ job, onMutate }: { job: JobSummary; onMutate: () => void }) {
               onClick={(e) => act("cancel", e)}
             >
               Cancel
+            </Button>
+          )}
+          {canRetry && (
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={acting === "retry"}
+              onClick={(e) => act("retry", e)}
+            >
+              Retry
             </Button>
           )}
         </div>

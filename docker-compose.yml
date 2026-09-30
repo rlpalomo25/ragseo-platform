@@ -28,7 +28,9 @@ services:
     restart: unless-stopped
 
   ollama:
-    image: ollama/ollama:latest
+    # Pinned to the same tag as docker-compose.prod.yml (deploy hardening) so
+    # local runs match production instead of tracking a moving `latest`.
+    image: ollama/ollama:0.34.3
     # Ollama clamps nomic-embed-text to a 2048-token context (all tags); the
     # backend truncates embedding inputs to fit rather than splitting doctrine
     # chunks (Doc 122). OLLAMA_CONTEXT_LENGTH is kept for other model types.
@@ -124,7 +126,13 @@ services:
     restart: unless-stopped
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Baked into the client bundle by the Dockerfile ARG; dev has no
+        # reverse proxy, so the browser must call the backend cross-origin
+        # (CORS_ORIGINS already allows http://localhost:3000, cookies included).
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "3000:3000"
     environment:

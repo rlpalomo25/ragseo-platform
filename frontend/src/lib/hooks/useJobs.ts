@@ -6,6 +6,7 @@ export interface JobFilters {
   status?: string;
   brand?: string;
   content_type?: string;
+  limit?: number;
 }
 
 export function useJobs(filters?: JobFilters) {
@@ -13,6 +14,7 @@ export function useJobs(filters?: JobFilters) {
   if (filters?.status) params.set("status", filters.status);
   if (filters?.brand) params.set("brand", filters.brand);
   if (filters?.content_type) params.set("content_type", filters.content_type);
+  if (filters?.limit) params.set("limit", String(filters.limit));
   const query = params.toString();
   const { data, isLoading, mutate } = useSWR<{ jobs: JobSummary[] }>(
     `/api/jobs${query ? `?${query}` : ""}`,
@@ -50,7 +52,7 @@ export async function createJob(body: {
 
 export async function jobAction(
   jobId: string,
-  action: "approve" | "cancel"
+  action: "approve" | "cancel" | "retry"
 ): Promise<JobSummary> {
   return apiFetch<JobSummary>(`/api/jobs/${jobId}/${action}`, {
     method: "POST",

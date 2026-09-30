@@ -26,9 +26,9 @@ export function Sidebar() {
     href === "/" ? pathname === "/" : pathname.startsWith(href);
 
   return (
-    <aside className="fixed left-0 top-0 z-30 h-screen w-64 border-r border-gray-200 bg-white">
-      <div className="flex h-14 items-center border-b border-gray-200 px-4">
-        <Link href="/" className="text-lg font-bold text-gray-900">
+    <aside className="fixed left-0 top-0 z-30 h-screen w-64 border-r border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
+      <div className="flex h-14 items-center border-b border-gray-200 px-4 dark:border-gray-800">
+        <Link href="/" className="text-lg font-bold text-gray-900 dark:text-gray-100">
           RAGSEO
         </Link>
       </div>
@@ -37,10 +37,10 @@ export function Sidebar() {
           <Link
             key={item.href}
             href={item.href}
-            className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+            className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:hover:bg-gray-800 ${
               isActive(item.href)
-                ? "bg-brand-50 text-brand-700"
-                : "text-gray-700"
+                ? "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+                : "text-gray-700 dark:text-gray-300"
             }`}
           >
             <span className="mr-3" aria-hidden="true">{item.icon}</span>
@@ -50,18 +50,18 @@ export function Sidebar() {
 
         {user?.role === "admin" && (
           <>
-            <div className="my-2 border-t border-gray-200" role="separator" />
-            <p className="px-3 py-1 text-xs font-semibold uppercase text-gray-400">
+            <div className="my-2 border-t border-gray-200 dark:border-gray-800" role="separator" />
+            <p className="px-3 py-1 text-xs font-semibold uppercase text-gray-400 dark:text-gray-500">
               Admin
             </p>
             {adminItems.map((item) => (
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+                className={`flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 dark:hover:bg-gray-800 ${
                   isActive(item.href)
-                    ? "bg-brand-50 text-brand-700"
-                    : "text-gray-700"
+                    ? "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+                    : "text-gray-700 dark:text-gray-300"
                 }`}
               >
                 <span className="mr-3" aria-hidden="true">{item.icon}</span>

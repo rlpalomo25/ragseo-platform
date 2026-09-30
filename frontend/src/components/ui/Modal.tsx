@@ -43,8 +43,8 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
       aria-modal="true"
       aria-labelledby="modal-title"
     >
-      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl overscroll-contain">
-        <h2 id="modal-title" className="text-lg font-semibold text-gray-900">
+      <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl overscroll-contain dark:bg-gray-900">
+        <h2 id="modal-title" className="text-lg font-semibold text-gray-900 dark:text-gray-100">
           {title}
         </h2>
         <div className="mt-4">{children}</div>

@@ -117,20 +117,41 @@ User asked: apply the 101-rule book (Sutter & Alexandrescu; summary at `https://
 - **Tests still green: 173 passed** (after all reformat/refactors).
 - Frontend `tsc --noEmit` + `next lint`: NOT run — this env has no Node/npm and `node_modules` is absent. Run locally before pushing.
 
+## TSR refactor wave — soft-delete, RBAC audit, retry, dark mode (2026-09-23)
+Objective: implement the TSR (landing page Tailwind, RBAC audit, vector, user soft-delete) with risk gates.
+Scope decisions: **vector/HNSW SKIPPED** (keep `vector(768)` + `ix_doc_chunks_embedding_hnsw`); partial unique index on **username** (no email column); Doctrine gating = harden existing (`/docs` stays writer-open, `/ingest` admin-only) + backend 403 audit; **added a real retry endpoint** with in-flight guard; dark mode = app-coherent.
+- **GATE-1 PASSED**: global soft-delete filter in `app/database.py` — `do_orm_execute` listener + `with_loader_criteria(User, deleted_at IS NULL, include_aliases=True)`; bypass via `disable_soft_delete_filter()` contextvar; deferred User import (circular-import safe). Works on legacy `db.query()`. `.query().get()` path unused (removed in cleanup wave).
+- **`models/user.py`**: `deleted_at` column; username no longer `unique`; `__table_args__` = `uq_users_username_active` (dialect-branched partial unique, pattern from 0006) + `ix_users_deleted_at`. Migration **`0009_user_soft_delete`** (add col → drop `ix_users_username` → partial unique → deleted_at index; symmetric downgrade). Head chain: 0008 → **0009** → **0010_audit_logs**.
+- **Audit**: `models/audit.py` (AuditLog), `services/audit.py` (`log_audit`, commits), `routers/audit.py` (`GET /api/audit`, admin), migration `0010_audit_logs`; registered in `models/__init__.py`, `main.py`, conftest `ALL_TABLES`. `dependencies.py` `require_admin`/`require_writer` now take `request` + `db` and write an `access_denied` row on 403; **anonymous 401s are NOT audited** (test asserts).
+- **Users router**: `user_id: UUID` (was `str` → pre-existing bug `'str' object has no attribute 'hex'`, same pattern as jobs.py); DELETE = soft-delete (`deleted_at`+`is_active=False`+revoke all sessions, `synchronize_session="fetch"`) + audit `user.delete`; new `POST /api/users/{user_id}/restore` (audited, 404 unless deleted). Soft-deleted usernames re-creatable (partial unique). `schemas/user.py` + `UserResponse.deleted_at`.
+- **Retry (Phase 3)**: `retry_job(db, job)` in `services/orchestrator.py` — only `failed`/`cancelled`; **in-flight guard** (any linked AgentTask still `running` → 409, refuses double-dispatch after sweeper-zombie races); prior failed stages → `skipped` (rows preserved); reset `status=running`, `revision_count=0`, `notes=None`; re-dispatch router at `max(sequence)+1`. Route `POST /api/jobs/{id}/retry` in `routers/jobs.py` (writer, 404/409). **GATE-2 PASSED**: `advance_job` failed-task branch now no-ops if a newer stage exists (stale crash-window resume can't re-fail a retried job).
+- **Stats `system` block** (`routers/stats.py` + `types/stats.ts`): `active_users` (unexpired Session.user_id distinct — sqlite compares tz-aware ISO strings fine), `queued_jobs` (`running`), `avg_latency_seconds` (**completed-only** tasks), `health` (degraded if failed_stages>0 or latency>300s; warning if chunk coverage<1; else healthy).
+- **Frontend (Phase 4)**: `tailwind.config.ts` `darkMode:"class"`; new `src/lib/hooks/useTheme.ts` (localStorage only inside `useEffect` → no hydration mismatch); Header toggle (sun/moon) + dark shell (layout body, Sidebar, Header); `dark:` variants on Card/Badge/Button/Input/Modal; landing `DashboardContent.tsx` rewritten: `gap-6` 4-tile metrics grid (Documents, Chunks indexed w/ CoverageBar, Awaiting review, Avg agent latency), SystemHealth strip (badge + active users + queued jobs + degraded message), **Recent Jobs grid** (`useJobs({ limit: 6 })`, `grid-cols-1 xl:grid-cols-2 gap-6`) with **View Logs → `/jobs/[id]`** and **Retry** on failed/cancelled. `useJobs` gained `limit` param; `jobAction` supports `"retry"`; Retry buttons on `/jobs` list + detail; admin users page: **Deactivate** (soft-delete w/ `window.confirm`) / **Restore** + Deleted badge. `JobSummary`/`User` types extended.
+- **Tests**: `tests/test_soft_delete.py` (8), `tests/test_rbac.py` (5 — incl. **403 rows are audited, 401s are not**), retry + GATE-2 + stats-system tests. Full suite on this wave: **204 passed, 2 failed**. Both failures are `tests/test_external_ingest.py` (upload-status file counts) and are **pre-existing, not from this wave** — verified by re-running them with the whole wave stashed (identical 2 failures on clean HEAD). Cause: the locally running container image is **stale** (built before the 2026-09-14 external-baseline purge), so it still carries 56 baked files in `/app/external` while the repo's `backend/external` is empty and the tests assert the post-purge count of 0. Rebuild the image to clear them. `ruff check` clean; `ruff format` applied to 3 new/modified files (`routers/stats.py`, `services/orchestrator.py`, `tests/test_soft_delete.py`).
+- **Post-review fixes applied before commit**: (1) `routers/users.py` `delete_user` had lost its explicit `db.commit()` and persisted only as a side effect of `log_audit`'s internal commit — restored an explicit `db.commit()` *after* the `log_audit` call, mirroring `restore_user` in the same file; this keeps the action + audit row atomic while removing the hidden coupling (had it been placed *before* `log_audit`, a crash in between would delete a user with no audit entry). (2) `useTheme.ts` read localStorage in a `useEffect` that ran *after* the write-effect's first pass, clobbering a stored `"dark"` back to `"light"` and flashing dark-mode users; replaced with a lazy `useState` initializer behind a `typeof window === "undefined"` guard.
+- **Frontend verified via `docker build ./frontend`** — no Node/npm on this host, so `tsc --noEmit`/`npm run lint` still cannot run directly here (standing caveat below), but `next build` (which fails on TS errors) completed, so the frontend type-checks inside the image.
+
 ## Next Move
-1. ✅ **DEPLOYED 2026-09-23**: pushed to `origin/main` (head `a176a9e`) via PAT and
-   redeployed on the VPS — `docker compose -f docker-compose.prod.yml build backend frontend
-   && up -d` ✅ **completed**. Smoke-tests pass: `/api/health` → 200, `/openapi.json`
-   serves the full schema (new `/api/ingest/external/{upload,delete}` present; migrations
-   0005–0008 ran on boot). VPS now runs `a176a9e`. (Writer-protected delete → 401 still
-   needs an authed check; the endpoint is visible in openapi.)
-2. Weekly routine: use WEEKLY_GSC_IMPORT_PROMPT.md + prompts/01-04 (website upload primary).
-3. Optional future: Doc 307 SERP agent via `app/tasks.py:AGENT_FUNCTIONS`.
-4. **Frontend still unverified (no Node here)**: before the next frontend
-   deploy, run `cd frontend && npx tsc --noEmit && npm run lint` on a Node
-   machine; optional DRY refactors still open (shared dashboard layout across the
-   8 page shells, status-variant map consolidation, repeated Tailwind input class
-   string, duplicated slugify + embedding-coverage bar).
+0. **⛔ DEPLOY THIS WAVE TO THE VPS** (`653f9aa` + the two TSR commits; prod is still on the
+   pre-hardening commit, migrations there should read `0008_learning_loop` — **confirm before
+   deploying**):
+   `cd /opt/ragseo-platform && git pull origin main` → **back up the DB** → `docker compose -f
+   docker-compose.prod.yml build backend celery-worker frontend && docker compose -f
+   docker-compose.prod.yml up -d` → confirm `SELECT version_num FROM alembic_version;` reads
+   `0010_audit_logs` → smoke per `prompts/03-push-redeploy.md` **plus**: an *existing* user must
+   still be able to log in (validates the global soft-delete filter + the `ix_users_username` →
+   `uq_users_username_active` swap against real rows).
+   - **⚠️ Build `celery-worker` too — it is NOT in `prompts/03-push-redeploy.md`.** In
+     `docker-compose.prod.yml` both `backend` and `celery-worker` declare `build: ./backend` with
+     **no `image:` key**, so Compose builds two independent tags
+     (`ragseo-platform-backend:latest` vs `ragseo-platform-celery-worker:latest`, currently both
+     `f0b2a5e8f16a`). Rebuilding only `backend` leaves the worker on **old `orchestrator.py`** —
+     which is exactly where `retry_job()` and the GATE-2 `advance_job` guard live — i.e. a
+     split-brain API/worker. Fix permanently by giving both a shared `image:` key.
+   - Local rebuild also clears the 2 pre-existing `test_external_ingest` failures above.
+1. ~~**Commit the working tree**~~ ✅ done — two commits (backend wave, then frontend/Docker).
+2. **Frontend has no Node on the dev host**: `npx tsc --noEmit && npm run lint` still need a Node
+   machine. `next build` inside `docker build ./frontend` does type-check, and it passed.
 
 ## Open items captured this session (2026-09-19)
 - **Best-practice cleanup committed `2738159`, working tree clean, NOT deployed.

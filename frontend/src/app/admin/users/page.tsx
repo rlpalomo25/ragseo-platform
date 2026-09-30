@@ -37,6 +37,41 @@ function UsersContent() {
   const { data, isLoading, mutate } = useSWR("/api/users", fetcher);
   const [showCreate, setShowCreate] = useState(false);
   const [editUser, setEditUser] = useState<User | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
+
+  const deactivate = useCallback(
+    async (user: User) => {
+      if (!window.confirm(`Deactivate ${user.username}? They will be signed out and cannot log in again.`)) return;
+      setBusyId(user.id);
+      setActionError("");
+      try {
+        await apiFetch(`/api/users/${user.id}`, { method: "DELETE" });
+        await mutate();
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Failed to deactivate user");
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [mutate]
+  );
+
+  const restore = useCallback(
+    async (user: User) => {
+      setBusyId(user.id);
+      setActionError("");
+      try {
+        await apiFetch(`/api/users/${user.id}/restore`, { method: "POST" });
+        await mutate();
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : "Failed to restore user");
+      } finally {
+        setBusyId(null);
+      }
+    },
+    [mutate]
+  );
 
   if (isLoading) {
     return (
@@ -58,6 +93,12 @@ function UsersContent() {
         <Button onClick={() => setShowCreate(true)}>Create User</Button>
       </div>
 
+      {actionError && (
+        <p className="mb-4 rounded border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+          {actionError}
+        </p>
+      )}
+
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
@@ -77,9 +118,13 @@ function UsersContent() {
                   <Badge variant={user.role === "admin" ? "info" : "default"}>{user.role}</Badge>
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-sm">
-                  <Badge variant={user.is_active ? "success" : "danger"}>
-                    {user.is_active ? "Active" : "Inactive"}
-                  </Badge>
+                  {user.deleted_at ? (
+                    <Badge variant="danger">Deleted</Badge>
+                  ) : (
+                    <Badge variant={user.is_active ? "success" : "warning"}>
+                      {user.is_active ? "Active" : "Inactive"}
+                    </Badge>
+                  )}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-500">
                   {user.last_login
@@ -87,12 +132,31 @@ function UsersContent() {
                     : "Never"}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-right text-sm">
-                  <button
-                    onClick={() => setEditUser(user)}
-                    className="text-brand-600 hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-                  >
-                    Edit
-                  </button>
+                  <div className="flex items-center justify-end gap-3">
+                    {user.deleted_at ? (
+                      <Button size="sm" loading={busyId === user.id} onClick={() => restore(user)}>
+                        Restore
+                      </Button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => setEditUser(user)}
+                          className="text-brand-600 hover:text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                        >
+                          Edit
+                        </button>
+                        {user.is_active && (
+                          <button
+                            onClick={() => deactivate(user)}
+                            disabled={busyId === user.id}
+                            className="text-red-600 hover:text-red-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 disabled:opacity-50"
+                          >
+                            Deactivate
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </td>
               </tr>
             ))}

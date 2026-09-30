@@ -48,7 +48,7 @@ function JobDetailContent() {
   const [acting, setActing] = useState(false);
 
   const runAction = useCallback(
-    async (action: "approve" | "cancel") => {
+    async (action: "approve" | "cancel" | "retry") => {
       if (!job) return;
       setActing(true);
       setActionError("");
@@ -133,15 +133,28 @@ function JobDetailContent() {
         </div>
       )}
 
-      {(job.status === "running" || job.status === "failed") && (
-        <div className="mt-4 flex justify-end">
-          <Button
-            variant="danger"
-            loading={acting}
-            onClick={() => runAction("cancel")}
-          >
-            Cancel Job
-          </Button>
+      {(job.status === "running" ||
+        job.status === "failed" ||
+        job.status === "cancelled") && (
+        <div className="mt-4 flex justify-end gap-2">
+          {(job.status === "failed" || job.status === "cancelled") && (
+            <Button
+              variant="secondary"
+              loading={acting}
+              onClick={() => runAction("retry")}
+            >
+              Retry Job
+            </Button>
+          )}
+          {(job.status === "running" || job.status === "failed") && (
+            <Button
+              variant="danger"
+              loading={acting}
+              onClick={() => runAction("cancel")}
+            >
+              Cancel Job
+            </Button>
+          )}
         </div>
       )}
 

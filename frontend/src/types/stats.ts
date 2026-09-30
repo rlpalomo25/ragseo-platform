@@ -22,8 +22,18 @@ export interface JobsStats {
   failed_stages: number;
 }
 
+export type SystemHealth = "healthy" | "warning" | "degraded";
+
+export interface SystemStats {
+  active_users: number;
+  queued_jobs: number;
+  avg_latency_seconds: number | null;
+  health: SystemHealth;
+}
+
 export interface StatsResponse {
   documents: DocumentsStats;
   chunks: ChunksStats;
   jobs: JobsStats;
+  system: SystemStats;
 }
