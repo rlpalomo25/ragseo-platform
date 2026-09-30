@@ -90,6 +90,35 @@ def test_job_detail_404_on_bad_uuid(client, test_user):
     assert client.get("/api/jobs/not-a-uuid").status_code == 422
 
 
+def test_retry_job_over_api(client, test_user, db_session):
+    from app.models.job import JobStage
+    from app.services.orchestrator import create_job
+
+    job = create_job(db_session, created_by=test_user.id, request="Write a page about gutter guards")
+    stage = db_session.query(JobStage).filter(JobStage.job_id == job.id).first()
+    stage.status = "failed"
+    job.status = "failed"
+    db_session.commit()
+
+    login(client, "testwriter", "secret123")
+    response = client.post(f"/api/jobs/{job.id}/retry")
+    assert response.status_code == 200
+    assert response.json()["status"] == "running"
+
+    again = client.post(f"/api/jobs/{job.id}/retry")
+    assert again.status_code == 409  # now running, not retryable
+
+
+def test_retry_job_404_and_conflict(client, test_user, db_session):
+    from app.services.orchestrator import create_job
+
+    login(client, "testwriter", "secret123")
+    assert client.post("/api/jobs/not-a-uuid/retry").status_code == 422
+
+    job = create_job(db_session, created_by=test_user.id, request="Write a page about gutter guards")
+    assert client.post(f"/api/jobs/{job.id}/retry").status_code == 409
+
+
 def test_list_jobs_filters_by_brand_and_status(client, test_user, db_session):
     from app.services.orchestrator import create_job
 

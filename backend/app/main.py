@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.routers import agents, auth, documents, ingest, jobs, learning, stats, users
+from app.routers import agents, audit, auth, documents, ingest, jobs, learning, stats, users
 
 settings = get_settings()
 app = FastAPI(title="RAGSEO Platform", version="0.1.0")
@@ -17,6 +17,7 @@ app.add_middleware(
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
+app.include_router(audit.router, prefix="/api", tags=["audit"])
 app.include_router(documents.router, prefix="/api/docs", tags=["documents"])
 app.include_router(agents.router, prefix="/api", tags=["agents"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["jobs"])

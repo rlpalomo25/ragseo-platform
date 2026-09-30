@@ -8,6 +8,7 @@ from app.services.orchestrator import (
     approve_job,
     cancel_job,
     create_job,
+    retry_job,
 )
 
 
@@ -342,3 +343,109 @@ def test_sweep_skips_recent_running_tasks(db_session, test_user):
     assert stats["stale_tasks"] == 0
     db_session.refresh(router_task)
     assert router_task.status == "running"
+
+
+def test_retry_rejects_running_and_awaiting_approval(db_session, test_user):
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    with pytest.raises(ValueError, match="cannot be retried"):
+        retry_job(db_session, job)
+
+    job = create_job(db_session, created_by=test_user.id, request="Write another page")
+    job.status = "awaiting_approval"
+    db_session.commit()
+    with pytest.raises(ValueError, match="cannot be retried"):
+        retry_job(db_session, job)
+
+
+def test_retry_refuses_while_task_in_flight(db_session, test_user):
+    """A job can land in 'failed' via the sweeper while the original task is
+    still executing on the live worker. Retry must refuse to double-dispatch."""
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    task = stage_task(db_session, latest_stage(db_session, job))
+    task.status = "running"
+    job.status = "failed"
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="in flight"):
+        retry_job(db_session, job)
+
+
+def test_retry_failed_job_dispatches_fresh_pipeline(db_session, test_user, no_celery):
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    old_router = latest_stage(db_session, job)
+    old_task = stage_task(db_session, old_router)
+    job = complete_stage(db_session, old_task, None, status="failed", error="LLM timeout")
+    assert job.status == "failed"
+    dispatched_before_retry = len(no_celery)
+
+    retried = retry_job(db_session, job)
+
+    assert retried.status == "running"
+    assert retried.revision_count == 0
+    assert retried.notes is None
+    db_session.refresh(old_router)
+    assert old_router.status == "skipped"  # history preserved, not re-failed
+    new_router = latest_stage(db_session, job, "router")
+    assert new_router.id != old_router.id
+    assert new_router.sequence > old_router.sequence
+    assert new_router.status == "pending"
+    assert len(no_celery) == dispatched_before_retry + 1
+    assert no_celery[-1][1] == "router"
+
+
+def test_retry_cancelled_job_refuses_in_flight_then_succeeds(db_session, test_user, no_celery):
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    task = stage_task(db_session, latest_stage(db_session, job))
+    task.status = "running"
+    db_session.commit()
+    job = cancel_job(db_session, job)
+    assert job.status == "cancelled"
+
+    # A cancel on a running pipeline leaves the worker's task executing; retry
+    # must refuse to double-dispatch until it settles.
+    with pytest.raises(ValueError, match="in flight"):
+        retry_job(db_session, job)
+
+    # The worker task eventually settles (acks as completed after the cancel);
+    # the cancel path already routed that stage as skipped stale.
+    job = complete_stage(db_session, task, {"agent": "router"}, status="completed")
+    assert job.status == "cancelled"
+
+    retried = retry_job(db_session, job)
+    assert retried.status == "running"
+    db_session.refresh(task)
+    assert task.status == "completed"
+    assert latest_stage(db_session, job, "router").status == "pending"
+    assert len(no_celery) == 2  # original create_job dispatch + the retry dispatch
+
+
+def test_retry_can_cancel_then_retry_failed(db_session, test_user, no_celery):
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    router = stage_task(db_session, latest_stage(db_session, job))
+    job = complete_stage(db_session, router, None, status="failed", error="boom")
+    cancel_job(db_session, job)
+    assert job.status == "cancelled"
+    retry_job(db_session, job)
+    assert job.status == "running"
+    assert latest_stage(db_session, job, "router").status == "pending"
+
+
+def test_gate2_retry_then_stale_failed_resume_does_not_refail_job(db_session, test_user, no_celery):
+    """GATE-2: an old failed task resumes (crash-window / zombie worker) AFTER
+    the job was retried. The retried run already dispatching newer stages means
+    this stale resume must be a no-op — NOT re-fail the fresh job."""
+    job = create_job(db_session, created_by=test_user.id, request="Write a page")
+    old_router = latest_stage(db_session, job)
+    old_task = stage_task(db_session, old_router)
+    job = complete_stage(db_session, old_task, None, status="failed", error="LLM timeout")
+    assert job.status == "failed"
+
+    job = retry_job(db_session, job)
+    assert job.status == "running"
+    assert latest_stage(db_session, job, "router").status == "pending"
+
+    db_session.refresh(old_task)
+    resume = advance_job(db_session, old_task)
+    assert resume is job  # treated as no-op
+    assert job.status == "running"
+    assert latest_stage(db_session, job, "router").status == "pending"

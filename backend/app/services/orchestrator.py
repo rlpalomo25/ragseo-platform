@@ -170,6 +170,20 @@ def advance_job(db: DBSession, task: AgentTask) -> AgentJob | None:
         return job
 
     if task.status == "failed":
+        # GATE-2 guard: a retry rows a fresh pipeline in AFTER this failure.
+        # A stale resume of this old (already-routed) failed task must NOT
+        # re-fail the retried job — its failure was superseded by newer stages.
+        newer_exists = (
+            db.query(JobStage).filter(JobStage.job_id == job.id, JobStage.sequence > stage.sequence).first()
+            is not None
+        )
+        if newer_exists:
+            logger.info(
+                "advance_job: stale failed task %s for job %s — job already advanced past it (retry), no-op",
+                task.id,
+                job.id,
+            )
+            return job
         stage.status = "failed"
         job.status = "failed"
         job.notes = f"Stage '{stage.agent_type}' errored: {(task.error_message or '')[:500]}"
@@ -288,6 +302,53 @@ def cancel_job(db: DBSession, job: AgentJob) -> AgentJob:
     job.status = "cancelled"
     db.commit()
     db.refresh(job)
+    return job
+
+
+RETRYABLE_STATUSES = ("failed", "cancelled")
+
+
+def retry_job(db: DBSession, job: AgentJob) -> AgentJob:
+    """Re-dispatch a failed/cancelled job as a fresh pipeline run.
+
+    The original stages are preserved as history (old ``failed`` stages become
+    ``skipped``); a brand-new chain (router -> writer -> auditor) is appended at
+    the next sequence numbers so ``uq_job_stages_job_sequence`` is respected.
+    """
+    if job.status not in RETRYABLE_STATUSES:
+        raise ValueError(f"Job cannot be retried from status: {job.status}")
+
+    # In-flight guard: a job can land in "failed" via the sweeper while its
+    # original Celery task is STILL executing on a live worker. Retrying would
+    # dispatch a second router stage -> concurrent agents + double advance_job
+    # routing. Refuse rather than double-spend.
+    running = (
+        db.query(AgentTask)
+        .join(JobStage, JobStage.task_id == AgentTask.id)
+        .filter(JobStage.job_id == job.id, AgentTask.status == "running")
+        .first()
+    )
+    if running is not None:
+        raise ValueError(f"Job has a task still in flight (task {running.id}); refusing to double-dispatch")
+
+    # Preserve history: prior failed stages stay as rows but read as skipped in
+    # the timeline, so the fresh run reads cleanly.
+    db.query(JobStage).filter(JobStage.job_id == job.id, JobStage.status == "failed").update(
+        {"status": "skipped"}, synchronize_session=False
+    )
+    job.status = "running"
+    job.revision_count = 0
+    job.notes = None
+    db.commit()
+
+    _dispatch_stage(
+        db,
+        job,
+        "router",
+        {
+            "request": job.request,
+        },
+    )
     return job
 
 

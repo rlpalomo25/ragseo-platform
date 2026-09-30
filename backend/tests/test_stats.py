@@ -64,7 +64,24 @@ def test_stats_aggregates(client, db_session, doctrine_corpus, test_user):
     assert body["jobs"]["failed_stages"] == 0
 
 
-def test_stats_counts_failed_stages(client, db_session, doctrine_corpus, test_user):
+def test_stats_system_block(client, db_session, doctrine_corpus, test_user):
+    from app.services.orchestrator import create_job
+
+    login(client, "testwriter", "secret123")
+    create_job(db_session, created_by=test_user.id, request="Write a service page")
+
+    body = client.get("/api/stats").json()
+    sys = body["system"]
+
+    assert sys["active_users"] >= 1  # the login session counts
+    assert sys["queued_jobs"] == 1
+    assert sys["avg_latency_seconds"] is None  # no completed tasks yet
+    assert sys["health"] == "healthy"
+
+
+def test_stats_system_block_reflects_failed_stage(client, db_session, doctrine_corpus, test_user):
+    from app.models.chunk import DocChunk
+    from app.models.document import Document
     from app.models.job import JobStage
     from app.services.orchestrator import create_job
 
@@ -74,5 +91,27 @@ def test_stats_counts_failed_stages(client, db_session, doctrine_corpus, test_us
     stage.status = "failed"
     db_session.commit()
 
-    body = client.get("/api/stats").json()
-    assert body["jobs"]["failed_stages"] == 1
+    full = client.get("/api/stats").json()
+    assert full["jobs"]["failed_stages"] == 1
+
+    doc = db_session.query(Document).order_by(Document.doc_number).first()
+    db_session.add(
+        DocChunk(
+            document_id=doc.id,
+            chunk_index=0,
+            heading_path="H",
+            content="x" * 20,
+            token_count=5,
+            content_hash="plain1",
+            embedding=None,
+        )
+    )
+    db_session.commit()
+
+    sys = client.get("/api/stats").json()["system"]
+    assert sys["health"] == "degraded"  # failed_stages > 0 dominates
+
+    stage.status = "skipped"
+    db_session.commit()
+    sys = client.get("/api/stats").json()["system"]
+    assert sys["health"] == "warning"  # chunks coverage < 1 now surfaces

@@ -7,6 +7,7 @@ import pytest
 from app.database import Base, get_db
 from app.main import app
 from app.models.agent_task import AgentTask
+from app.models.audit import AuditLog
 from app.models.chunk import DocChunk
 from app.models.document import DocReference, Document
 from app.models.external import (
@@ -46,6 +47,7 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 ALL_TABLES = [
     User.__table__,
     UserSession.__table__,
+    AuditLog.__table__,
     Document.__table__,
     DocReference.__table__,
     AgentTask.__table__,

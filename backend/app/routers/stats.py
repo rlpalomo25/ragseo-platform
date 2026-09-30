@@ -11,9 +11,11 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.models.agent_task import AgentTask
 from app.models.chunk import DocChunk
 from app.models.document import Document
 from app.models.job import AgentJob, JobStage
+from app.models.user import Session as UserSession
 from app.models.user import User
 
 router = APIRouter()
@@ -43,10 +45,18 @@ class JobsStats(BaseModel):
     failed_stages: int
 
 
+class SystemStats(BaseModel):
+    active_users: int
+    queued_jobs: int
+    avg_latency_seconds: float | None
+    health: str  # "healthy" | "warning" | "degraded"
+
+
 class StatsResponse(BaseModel):
     documents: DocumentsStats
     chunks: ChunksStats
     jobs: JobsStats
+    system: SystemStats
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -68,6 +78,36 @@ def get_stats(user: User = Depends(get_current_user), db: DBSession = Depends(ge
     now = datetime.now(UTC)
     created_times = [dt for j in jobs if (dt := _aware(j.created_at)) is not None]
 
+    active_users = (
+        db.query(func.count(func.distinct(UserSession.user_id))).filter(UserSession.expires_at > now).scalar()
+        or 0
+    )
+    queued_jobs = db.query(func.count(AgentJob.id)).filter(AgentJob.status == "running").scalar() or 0
+
+    # Latency only over tasks that actually completed (exclude sweeper-failed /
+    # error rows that set completed_at).
+    done = (
+        db.query(AgentTask)
+        .filter(
+            AgentTask.status == "completed",
+            AgentTask.started_at.isnot(None),
+            AgentTask.completed_at.isnot(None),
+        )
+        .all()
+    )
+    latencies = [
+        (t.completed_at - t.started_at).total_seconds() for t in done if t.completed_at and t.started_at
+    ]
+    avg_latency = round(mean(latencies), 2) if latencies else None
+
+    failed_stages = db.query(func.count(JobStage.id)).filter(JobStage.status == "failed").scalar() or 0
+    if failed_stages > 0 or (avg_latency is not None and avg_latency > 300):
+        health = "degraded"
+    elif chunks_embedded < chunks_total:
+        health = "warning"
+    else:
+        health = "healthy"
+
     return StatsResponse(
         documents=DocumentsStats(
             total=db.query(func.count(Document.id)).scalar() or 0,
@@ -88,6 +128,12 @@ def get_stats(user: User = Depends(get_current_user), db: DBSession = Depends(ge
             with_revisions=sum(1 for j in jobs if j.revision_count > 0),
             created_last_7d=sum(1 for dt in created_times if (now - dt).days < 7),
             created_last_30d=sum(1 for dt in created_times if (now - dt).days < 30),
-            failed_stages=db.query(func.count(JobStage.id)).filter(JobStage.status == "failed").scalar() or 0,
+            failed_stages=failed_stages,
+        ),
+        system=SystemStats(
+            active_users=active_users,
+            queued_jobs=queued_jobs,
+            avg_latency_seconds=avg_latency,
+            health=health,
         ),
     )

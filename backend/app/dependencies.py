@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.database import get_db
 from app.models.user import User
+from app.services.audit import log_audit
 from app.services.auth_service import get_user_by_token
 
 
@@ -25,13 +26,33 @@ def get_current_user(request: Request, db: DBSession = Depends(get_db)) -> User:
     return user
 
 
-def require_admin(user: User = Depends(get_current_user)) -> User:
+def _deny(request: Request, db: DBSession, user: User, detail: str, action: str) -> None:
+    log_audit(
+        db,
+        user=user,
+        action=action,
+        route=request.url.path,
+        detail=f"{detail} (role={user.role})",
+        status_code=403,
+    )
+    raise HTTPException(status_code=403, detail=detail)
+
+
+def require_admin(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+) -> User:
     if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
+        _deny(request, db, user, "Admin access required", "access_denied")
     return user
 
 
-def require_writer(user: User = Depends(get_current_user)) -> User:
+def require_writer(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: DBSession = Depends(get_db),
+) -> User:
     if user.role not in ("admin", "writer"):
-        raise HTTPException(status_code=403, detail="Writer access required")
+        _deny(request, db, user, "Writer access required", "access_denied")
     return user

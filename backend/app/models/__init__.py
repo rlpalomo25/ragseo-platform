@@ -1,3 +1,4 @@
+from app.models.audit import AuditLog
 from app.models.document import DocReference, Document
 from app.models.external import (
     AIOverviewImpressions,
@@ -18,6 +19,7 @@ from app.models.user import Session, User
 
 __all__ = [
     "AIOverviewImpressions",
+    "AuditLog",
     "Backlink",
     "CallTracking",
     "ContentPerformanceSnapshot",

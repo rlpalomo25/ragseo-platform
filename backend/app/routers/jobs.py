@@ -9,7 +9,7 @@ from app.dependencies import require_writer
 from app.models.agent_task import AgentTask
 from app.models.job import AgentJob, JobStage
 from app.models.user import User
-from app.services.orchestrator import approve_job, cancel_job, create_job
+from app.services.orchestrator import approve_job, cancel_job, create_job, retry_job
 
 router = APIRouter()
 
@@ -150,6 +150,22 @@ def approve_existing_job(
         raise HTTPException(status_code=404, detail="Job not found")
     try:
         job = approve_job(db, job)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return _summary(job)
+
+
+@router.post("/{job_id}/retry", response_model=JobSummary)
+def retry_existing_job(
+    job_id: UUID,
+    user: User = Depends(require_writer),
+    db: DBSession = Depends(get_db),
+):
+    job = db.query(AgentJob).filter(AgentJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        job = retry_job(db, job)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return _summary(job)
