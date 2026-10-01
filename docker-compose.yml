@@ -91,9 +91,17 @@ services:
       - ./09042026:/app/external:ro
       # Writable folder for website uploads (POST /api/ingest/external/upload).
       - ./external_uploads:/app/uploads/external
+      # Writable folder for doctrine .md uploaded through the website
+      # (POST /api/ingest/doctrine/upload).
+      - ./doctrine_uploads:/app/uploads/doctrine
       # Dev bind-mount: app code is live, so code fixes deploy on `up -d`
       # without image rebuilds (the image still bakes a copy for prod runs).
       - ./backend/app:/app/app:ro
+      # Test suite is NOT in the image (backend/.dockerignore excludes it), so the
+      # only way to run pytest here is to mount it. `docker compose exec backend
+      # python -m pytest -m "not integration"` — an image rebuild is NOT required.
+      - ./backend/tests:/app/tests:ro
+      - ./backend/pytest.ini:/app/pytest.ini:ro
     restart: unless-stopped
 
   celery-worker:
@@ -122,6 +130,9 @@ services:
       - ../:/app/doctrine:ro
       - ./09042026:/app/external:ro
       - ./external_uploads:/app/uploads/external
+      # The worker runs the hourly doctrine.reconcile sweep and must see the
+      # uploads the API writes, or every upload is marked `missing` within the hour.
+      - ./doctrine_uploads:/app/uploads/doctrine
       - ./backend/app:/app/app:ro
     restart: unless-stopped
 

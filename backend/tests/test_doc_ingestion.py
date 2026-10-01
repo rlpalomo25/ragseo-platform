@@ -8,6 +8,7 @@ from app.services.doc_ingestion import (
     extract_title,
     extract_version,
     ingest_all_docs,
+    reconcile_doctrine,
 )
 
 
@@ -167,14 +168,20 @@ def test_ingest_backfills_missing_embeddings(db_session, tmp_path, monkeypatch):
 
 
 def test_ingest_missing_path_raises(db_session, tmp_path):
+    """Neither the baked library nor the upload folder exists -> hard fail."""
     settings = get_settings()
     original = settings.doctrine_path
+    original_upload = settings.doctrine_upload_path
     settings.doctrine_path = str(tmp_path / "does-not-exist")
+    settings.doctrine_upload_path = str(tmp_path / "uploads-do-not-exist")
     try:
         with pytest.raises(FileNotFoundError):
             ingest_all_docs(db_session)
+        with pytest.raises(FileNotFoundError):
+            reconcile_doctrine(db_session)
     finally:
         settings.doctrine_path = original
+        settings.doctrine_upload_path = original_upload
 
 
 def test_ingest_duplicate_doc_number_supersedes_without_unique_violation(db_session, tmp_path):

@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     default_admin_username: str = "admin"
     default_admin_password: str = DEFAULT_ADMIN_PASSWORD_PLACEHOLDER
     doctrine_path: str = "/app/doctrine"
+    # Writable folder for doctrine .md uploaded through the website
+    # (POST /api/ingest/doctrine/upload). doctrine_path is the baked, read-only
+    # library; the two are scanned as a union so the hourly celery reconcile
+    # cannot mark uploads `missing`.
+    doctrine_upload_path: str = "/app/uploads/doctrine"
     external_data_path: str = "/app/external"
     external_upload_path: str = "/app/uploads/external"
 

@@ -1,8 +1,8 @@
 import pytest
-
 from app.models.agent_task import AgentTask
 from app.models.job import AgentJob, JobStage
 from app.services.markdown_export import build_markdown, slugify
+
 from tests.conftest import login
 
 
@@ -18,7 +18,7 @@ def _writer_output(**overrides):
     output = {
         "title": "Gutter Guard Review Roundup",
         "meta_title": "Best Gutter Guards: 6 Picks for 2026",
-        "meta_description": "We tested 6 gutter guards: " 'prices, coverage, and install time.',
+        "meta_description": "We tested 6 gutter guards: prices, coverage, and install time.",
         "brand": "mastershield",
         "content_type": "comparison",
         "archetype": "comparison",
@@ -135,7 +135,9 @@ def test_export_front_matter_carries_all_six_fields(client, db_session, test_use
     assert 'title: "Gutter Guard Review Roundup"' in front_matter
     assert 'meta_title: "Best Gutter Guards: 6 Picks for 2026"' in front_matter
     # A colon inside the value must not break the YAML mapping.
-    assert 'meta_description: "We tested 6 gutter guards: prices, coverage, and install time."' in front_matter
+    assert (
+        'meta_description: "We tested 6 gutter guards: prices, coverage, and install time."'
+    ) in front_matter
     assert 'brand: "mastershield"' in front_matter
     assert 'content_type: "comparison"' in front_matter
     assert 'archetype: "comparison"' in front_matter
@@ -199,7 +201,7 @@ def test_export_prefers_highest_sequence_writer_stage(client, db_session, test_u
 
     body = _export(client, job).text
     assert 'title: "Second Draft"' in body
-    assert "Gutter Guard Review Roundup\"" not in body
+    assert 'Gutter Guard Review Roundup"' not in body
 
 
 def test_export_skips_writer_stage_with_empty_content(client, db_session, test_user):
@@ -217,9 +219,7 @@ def test_export_skips_writer_stage_with_empty_content(client, db_session, test_u
     db_session.add(task)
     db_session.commit()
     db_session.refresh(task)
-    db_session.add(
-        JobStage(job_id=job.id, sequence=5, agent_type="writer", task_id=task.id, status="failed")
-    )
+    db_session.add(JobStage(job_id=job.id, sequence=5, agent_type="writer", task_id=task.id, status="failed"))
     db_session.commit()
 
     assert 'title: "Gutter Guard Review Roundup"' in _export(client, job).text

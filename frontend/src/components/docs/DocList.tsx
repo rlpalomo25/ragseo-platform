@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import useSWR from "swr";
 import { useDocs } from "@/lib/hooks/useDocs";
 import { DocSearch } from "./DocSearch";
 import { DocSeries } from "./DocSeries";
 import { DocType } from "./DocType";
 import { DocCard } from "./DocCard";
+import { DoctrineUploadCard } from "./DoctrineUploadCard";
 import { Spinner } from "@/components/ui/Spinner";
 
 export function DocList() {
@@ -23,15 +25,26 @@ export function DocList() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const { data, isLoading, error } = useDocs({
+  const { data, isLoading, error, mutate } = useDocs({
     page,
     series: series || undefined,
     doc_type: docType || undefined,
     search: debouncedSearch || undefined,
   });
 
+  // Revalidate every cached docs list, not just the visible page: an upload can
+  // change the total, the series breakdown and the current page at once.
+  const { mutate: mutateAll } = useSWR((key: string) =>
+    key.startsWith("/api/docs") ? key : null
+  );
+  const refreshAfterUpload = () => {
+    void mutate();
+    void mutateAll();
+  };
+
   return (
     <div className="space-y-4">
+      <DoctrineUploadCard onUploaded={refreshAfterUpload} />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <DocSearch
           value={search}

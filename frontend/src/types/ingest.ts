@@ -25,6 +25,7 @@ export interface IngestTotals {
 
 export interface IngestStatusResponse {
   doctrine_path: string;
+  doctrine_folders: string[];
   totals: IngestTotals;
   files: IngestFileStatus[];
 }
@@ -97,4 +98,26 @@ export interface ExternalDeleteResultResponse {
   baked: number;
   not_found: number;
   files: ExternalDeleteItem[];
+}
+
+// --- Doctrine uploads (POST /api/ingest/doctrine/upload) ---
+
+export interface DoctrineUploadItem {
+  filename: string;
+  doc_number: string;
+  title: string;
+  status: "created" | "updated" | "unchanged" | "error";
+  chunks: number;
+  superseded: string | null;
+  error: string | null;
+}
+
+export interface DoctrineUploadResultResponse {
+  message: string;
+  created: number;
+  updated: number;
+  unchanged: number;
+  errors: number;
+  chunks: number;
+  files: DoctrineUploadItem[];
 }

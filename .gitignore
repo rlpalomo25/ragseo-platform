@@ -15,8 +15,9 @@ __pycache__/
 backend/.venv/
 backend/tests/files/
 
-# Runtime uploads (writable service dir, kept out of git)
+# Runtime uploads (writable service dirs, kept out of git)
 external_uploads/
+doctrine_uploads/
 
 # Raw weekly export dump. The Dockerfile bakes backend/external (tracked), so a
 # VPS clone is self-contained; 09042026 is only a convenience source for

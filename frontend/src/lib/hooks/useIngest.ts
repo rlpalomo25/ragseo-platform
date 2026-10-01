@@ -8,6 +8,7 @@ import type {
   ExternalStatusResponse,
   ExternalImportResultResponse,
   ExternalDeleteResultResponse,
+  DoctrineUploadResultResponse,
 } from "@/types/ingest";
 
 const ingestFetcher = (url: string) => apiFetch<IngestStatusResponse>(url);
@@ -54,4 +55,12 @@ export async function deleteExternalFiles(
     method: "DELETE",
     body: JSON.stringify({ filenames }),
   });
+}
+
+export async function uploadDoctrineFiles(
+  files: File[]
+): Promise<DoctrineUploadResultResponse> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+  return apiUpload<DoctrineUploadResultResponse>("/api/ingest/doctrine/upload", formData);
 }

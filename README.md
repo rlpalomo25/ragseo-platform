@@ -60,22 +60,52 @@ backend/
     tasks.py       # Celery agent registry (AGENT_FUNCTIONS) + pipeline advancement
   alembic/         # migrations (0001_baseline, 0002_jobs)
   scripts/seed.py  # create tables + default admin + doctrine ingestion
-frontend/          # Next.js App Router: /login /docs /jobs /agents /admin/users
+frontend/          # Next.js App Router: /login /docs /jobs /agents /ingest /exports /admin/users
 doctrine/          # mount point; docker-compose bind-mounts ../ read-only
+doctrine_uploads/  # writable; doctrine .md uploaded via the website (/docs)
+external_uploads/  # writable; weekly GSC/GA4 exports uploaded via the website (/exports)
 ```
+
+Doctrine and external data are each scanned as a **union** of a read-only baked
+folder and a writable upload folder. The hourly `doctrine.reconcile` beat task
+sweeps any active document whose file is absent from that union to `missing`, so
+both the API **and the celery worker** must have the upload mounts — the worker
+running a scan that cannot see what the API just wrote is the failure mode.
 
 ## Common commands
 
 ```bash
 # Re-run doctrine ingestion (admin endpoint or CLI)
-curl -X POST http://localhost:8000/api/docs/reingest -b "session_token=..."
+curl -X POST http://localhost:8000/api/ingest/reingest -b "session_token=..."
 docker compose exec backend python scripts/ingest_docs.py
+
+# Upload a doctrine document (writer or admin; also available in the UI at /docs)
+curl -X POST http://localhost:8000/api/ingest/doctrine/upload \
+  -b "session_token=..." -F "files=@Doc 100_Master Content Doctrine.md"
+
+# Naming rules for uploads — the whole batch is rejected if any file breaks one.
+#   * must start with "Doc" (anchored, so "old Doc 100_Title.md" is refused)
+#   * must match Doc <number>[-<suffix>]_<Title>  (or "Doc <number>:<Title>")
+#   * ".md", case-insensitive — a Windows ".MD" is accepted and scanned
+#   * filename <= 255 chars, file <= 10 MB
+#   * 409 if the name already exists in the baked (read-only) doctrine library;
+#     library docs are edited via scripts/sync_doctrine.sh + a redeploy, not here
+# Uploading over the number of an existing active doc supersedes it, and the response
+# names what it superseded. There is no delete/revert in the UI: superseding is one-way.
 
 # Migrations
 docker compose exec backend alembic upgrade head
 
-# Backend tests (unit suite runs on SQLite; integration tests need Postgres+pgvector)
-cd backend && pip install -r requirements.txt && pytest -m "not integration"
+# Backend tests (unit suite runs on SQLite; integration tests need Postgres+pgvector).
+# dev compose mounts tests/ + pytest.ini, so no image rebuild is needed.
+docker compose exec backend python -m pytest -q
+
+# Lint / format (pinned to the version in backend/pyproject.toml; no local install)
+docker run --rm -v "$PWD/backend:/w" -w /w ghcr.io/astral-sh/ruff:0.16.8 check app/ tests/
+docker run --rm -v "$PWD/backend:/w" -w /w ghcr.io/astral-sh/ruff:0.16.8 format app/ tests/
+
+# Frontend gate: next build fails on lint errors as well as type errors
+docker build ./frontend
 ```
 
 See `REQUIREMENTS.md` for the roadmap and `IMPLEMENTATION_PLAN.md` for current

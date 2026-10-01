@@ -341,6 +341,28 @@ def _upload_path(tmp_path):
     return str(tmp_path / "uploads")
 
 
+@pytest.fixture(autouse=True)
+def isolated_scan_roots(tmp_path, monkeypatch):
+    """Point both scan roots at empty tmp dirs so counts are hermetic.
+
+    ``settings.external_data_path`` defaults to the deployed baked folder
+    (``/app/external``). In dev compose that path is bind-mounted from the
+    gitignored ``09042026/`` weekly-export folder, so any test that asserts on
+    ``totals.files`` without overriding it reads whatever the host machine
+    happens to hold -- which is how two status tests came to fail only on
+    machines that had weekly data dropped in.
+
+    Tests that need real content still override ``external_data_path``
+    themselves; a later ``monkeypatch.setattr`` on the same fixture stack wins.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "external_data_path", str(tmp_path / "baked"))
+    monkeypatch.setattr(settings, "external_upload_path", _upload_path(tmp_path))
+    Path(tmp_path / "baked").mkdir(parents=True, exist_ok=True)
+
+
 def _upload_files(client, names_contents, upload_dir):
     files = [("files", (name, content, "application/octet-stream")) for name, content in names_contents]
     return client.post("/api/ingest/external/upload", files=files)

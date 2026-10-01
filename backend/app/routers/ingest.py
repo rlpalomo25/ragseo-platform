@@ -1,7 +1,7 @@
 """Admin ingest control panel: preview doctrine folder vs DB, then reingest."""
 
 import logging
-from pathlib import Path, PurePath
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -15,7 +15,10 @@ from app.models.chunk import DocChunk
 from app.models.document import Document
 from app.models.external import ExternalExport
 from app.models.user import User
+from app.services.audit import log_audit
 from app.services.doc_ingestion import (
+    DOC_PATTERN,
+    doctrine_folders,
     extract_doc_number,
     extract_doc_type,
     extract_series,
@@ -23,6 +26,8 @@ from app.services.doc_ingestion import (
     extract_version,
     file_hash,
     ingest_all_docs,
+    ingest_files,
+    scan_doctrine_files,
 )
 from app.services.external_ingest import (
     classify,
@@ -32,6 +37,7 @@ from app.services.external_ingest import (
     import_external_folder,
 )
 from app.services.learning_loop import snapshot_publications
+from app.services.uploads import safe_filename
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -39,6 +45,11 @@ settings = get_settings()
 router = APIRouter()
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB per uploaded export file
+MAX_DOCTRINE_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB per uploaded doctrine doc
+# Document.filename is String(255); a longer name would be truncated by the DB
+# (or rejected outright on Postgres) and then never match its own file again.
+MAX_DOCTRINE_FILENAME_LEN = 255
+DOCTRINE_NAME_EXAMPLE = "Doc <number>_<Title>.md (for example: Doc 100_Master Content Doctrine.md)"
 
 
 def _external_folders() -> list[Path]:
@@ -53,15 +64,6 @@ def _external_folders() -> list[Path]:
         if folder.is_dir():
             folders.append(folder)
     return folders
-
-
-def _safe_filename(name: str) -> str:
-    """Basename only, cross-platform (strips any directory components)."""
-    clean = name.replace("\\", "/").strip().rstrip(".")
-    stem = clean.rsplit("/", 1)[-1]
-    if not stem or stem in (".", ".."):
-        return ""
-    return PurePath(stem).name
 
 
 class IngestFileStatus(BaseModel):
@@ -93,6 +95,7 @@ class IngestStatusResponse(BaseModel):
     doctrine_path: str
     totals: IngestTotals
     files: list[IngestFileStatus]
+    doctrine_folders: list[str] = []
 
 
 class IngestStats(BaseModel):
@@ -109,11 +112,10 @@ class IngestResultResponse(BaseModel):
     stats: IngestStats
 
 
-def _scan_doctrine(doctrine_path: Path, db: DBSession) -> list[IngestFileStatus]:
+def _scan_doctrine(db: DBSession) -> list[IngestFileStatus]:
+    """Inspect every markdown file across the doctrine folders (baked + uploads)."""
     files: list[IngestFileStatus] = []
-    for filepath in sorted(doctrine_path.glob("*.md")):
-        if filepath.name.startswith(".") or ":Zone.Identifier" in filepath.name:
-            continue
+    for filepath in scan_doctrine_files():
         try:
             content = filepath.read_text(encoding="utf-8")
             fhash = file_hash(str(filepath))
@@ -169,11 +171,11 @@ def _scan_doctrine(doctrine_path: Path, db: DBSession) -> list[IngestFileStatus]
 
 @router.get("/ingest/status", response_model=IngestStatusResponse)
 def ingest_status(admin: User = Depends(require_admin), db: DBSession = Depends(get_db)):
-    doctrine_path = Path(settings.doctrine_path)
-    if not doctrine_path.exists():
-        raise HTTPException(status_code=500, detail=f"Doctrine path not found: {doctrine_path}")
+    folders = doctrine_folders()
+    if not folders:
+        raise HTTPException(status_code=500, detail=f"Doctrine path not found: {settings.doctrine_path}")
 
-    files = _scan_doctrine(doctrine_path, db)
+    files = _scan_doctrine(db)
     totals = IngestTotals()
     for f in files:
         totals.files += 1
@@ -191,7 +193,8 @@ def ingest_status(admin: User = Depends(require_admin), db: DBSession = Depends(
         totals.embedding_coverage = round(totals.embedded / totals.chunks, 4)
 
     return IngestStatusResponse(
-        doctrine_path=str(doctrine_path),
+        doctrine_path=settings.doctrine_path,
+        doctrine_folders=[str(f) for f in folders],
         totals=totals,
         files=files,
     )
@@ -204,6 +207,175 @@ def reingest(admin: User = Depends(require_admin), db: DBSession = Depends(get_d
     except FileNotFoundError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
     return IngestResultResponse(message="Reingestion complete", stats=IngestStats(**stats))
+
+
+class DoctrineUploadItem(BaseModel):
+    filename: str
+    doc_number: str = ""
+    title: str = ""
+    status: str  # "created" | "updated" | "unchanged" | "error"
+    chunks: int = 0
+    superseded: str | None = None
+    error: str | None = None
+
+
+class DoctrineUploadResultResponse(BaseModel):
+    message: str
+    created: int = 0
+    updated: int = 0
+    unchanged: int = 0
+    errors: int = 0
+    chunks: int = 0
+    files: list[DoctrineUploadItem] = []
+
+
+def _baked_doctrine_names() -> set[str]:
+    """Filenames owned by the read-only library baked into the image."""
+    baked = Path(settings.doctrine_path)
+    if not baked.is_dir():
+        return set()
+    return {p.name for p in baked.iterdir() if p.is_file()}
+
+
+def _reject_unusable_doctrine_name(name: str, baked: set[str]) -> None:
+    """Refuse a filename the doctrine parser would mangle, or that already exists baked.
+
+    ``extract_doc_number`` falls back to the whole filename when there is no
+    ``_``/``:`` after the number, so a loose name like ``random.md`` yields
+    ``doc_number="random"``. That garbage becomes permanent under
+    ``uq_documents_doc_number_active``, permanently blocking the real Doc 100.
+    Every rejection below therefore happens *before* anything is written to
+    disk, and rejects the whole batch so a typo cannot half-apply.
+    """
+    if len(name) > MAX_DOCTRINE_FILENAME_LEN:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{name}' is longer than {MAX_DOCTRINE_FILENAME_LEN} characters",
+        )
+    if not name.lower().endswith(".md"):
+        raise HTTPException(status_code=400, detail=f"'{name}' is not a markdown (.md) file")
+    if not DOC_PATTERN.search(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{name}' does not carry a recognisable doc number. Expected {DOCTRINE_NAME_EXAMPLE}",
+        )
+    if name in baked:
+        # scan_doctrine_files() resolves filename collisions in favour of the
+        # baked folder, so an accepted upload shadowing a library file would be
+        # reported as ingested and then silently ignored by every later scan.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"'{name}' is part of the baked doctrine library. Editing library "
+                "documents is an ops task (sync_doctrine.sh + redeploy), not a website upload."
+            ),
+        )
+
+
+@router.post("/ingest/doctrine/upload", response_model=DoctrineUploadResultResponse)
+async def upload_doctrine(
+    files: list[UploadFile] = File(...),
+    user: User = Depends(require_writer),
+    db: DBSession = Depends(get_db),
+):
+    """Save uploaded doctrine markdown and ingest it inline (writer or admin).
+
+    Mirrors ``POST /api/ingest/external/upload``: the bytes land in the writable
+    ``doctrine_upload_path`` (gitignored, survives redeploys) and are ingested
+    immediately so the change is live for the very next agent job — the hourly
+    reconcile would otherwise take up to an hour.
+    """
+    upload_dir = Path(settings.doctrine_upload_path)
+    baked = _baked_doctrine_names()
+
+    # Validate everything before writing anything, so a bad name in the batch
+    # cannot leave half of it on disk for the hourly reconcile to pick up.
+    planned: list[tuple[str, bytes]] = []
+    for f in files:
+        name = safe_filename(f.filename or "")
+        if not name:
+            continue
+        _reject_unusable_doctrine_name(name, baked)
+        content = await f.read()
+        if len(content) > MAX_DOCTRINE_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"'{name}' exceeds the {MAX_DOCTRINE_UPLOAD_BYTES // (1024 * 1024)} MB per-file limit"
+                ),
+            )
+        planned.append((name, content))
+
+    if not planned:
+        raise HTTPException(status_code=400, detail="No usable .md files in the upload")
+
+    # Record which active document each upload will displace, so the response
+    # can name it: superseding a governing doc is the single most consequential
+    # thing this endpoint does, and it is not reversible from the website.
+    supersedes: dict[str, str] = {}
+    for name, _ in planned:
+        doc_number = extract_doc_number(name)
+        current = (
+            db.query(Document)
+            .filter(
+                Document.doc_number == doc_number,
+                Document.filename != name,
+                Document.status == "active",
+            )
+            .first()
+        )
+        if current:
+            supersedes[name] = f"{current.doc_number} ({current.title})"
+
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved: list[Path] = []
+    for name, content in planned:
+        (upload_dir / name).write_bytes(content)
+        saved.append(upload_dir / name)
+        logger.info("User '%s' uploaded doctrine %s (%d bytes)", user.username, name, len(content))
+
+    stats = ingest_files(db, saved)
+    by_name = {entry["filename"]: entry for entry in stats.get("files", [])}
+
+    resp = DoctrineUploadResultResponse(
+        message=f"Uploaded and ingested {len(saved)} doctrine document(s)",
+        chunks=stats["chunks"],
+    )
+    for filepath in saved:
+        entry = by_name.get(filepath.name, {})
+        status = entry.get("status", "error")
+        item = DoctrineUploadItem(
+            filename=filepath.name,
+            doc_number=entry.get("doc_number") or extract_doc_number(filepath.name),
+            title=entry.get("title") or extract_title("", filepath.name),
+            status=status,
+            chunks=entry.get("chunks", 0),
+            superseded=supersedes.get(filepath.name),
+            error=entry.get("error"),
+        )
+        resp.files.append(item)
+        if status == "created":
+            resp.created += 1
+        elif status == "updated":
+            resp.updated += 1
+        elif status == "unchanged":
+            resp.unchanged += 1
+        else:
+            resp.errors += 1
+
+    log_audit(
+        db,
+        user=user,
+        action="doctrine.upload",
+        route="/api/ingest/doctrine/upload",
+        detail=(
+            f"{resp.created} created, {resp.updated} updated, {resp.unchanged} unchanged, "
+            f"{resp.errors} errors"
+            + (f"; superseded {sorted(set(supersedes.values()))}" if supersedes else "")
+        ),
+        status_code=200,
+    )
+    return resp
 
 
 class ExternalFileStatus(BaseModel):
@@ -369,7 +541,7 @@ async def upload_external(
 
     saved: list[Path] = []
     for f in files:
-        name = _safe_filename(f.filename or "")
+        name = safe_filename(f.filename or "")
         if not name:
             continue
         content = await f.read()
@@ -436,7 +608,7 @@ def delete_external(
         baked_file_names = {p.name for p in baked_dir.iterdir() if p.is_file()}
 
     for raw in payload.filenames:
-        name = _safe_filename(raw)
+        name = safe_filename(raw)
         if not name:
             resp.not_found += 1
             resp.files.append(ExternalDeleteItem(filename="", status="not_found", message="Invalid filename"))

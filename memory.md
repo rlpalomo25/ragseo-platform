@@ -1,15 +1,36 @@
 # Project Memory — RAGSEO Platform
 
 ## Objective
-Ingest weekly external market data (GSC/GA4/Ubersuggest/calls/leads from `09042026/`) idempotently, and wire it into agent decision-making (SERP + Router/Writer data context). **Built and validated end-to-end (session completed 2026-09-10).**
+Ship a production-grade SEO content platform: weekly external market data (GSC/GA4/Ubersuggest/
+calls/leads from `09042026/`) ingested idempotently and wired into agent decision-making (SERP +
+Router/Writer data context) — **done and validated 2026-09-10**; and in-app self-service so
+writers can manage doctrine without an ops deploy — **Markdown export shipped (`0fa1b6b`), doctrine
+upload shipped 2026-10-01 (validated, uncommitted)**.
+
+## Where things stand right now (2026-10-01, read this first)
+| | |
+|---|---|
+| Local `main` | `e68f9b9`, **+15 modified / 3 new files uncommitted** (the Part B wave) |
+| `origin/main` | `e68f9b9` — in sync, but the Part B wave is **local only** |
+| VPS (`157.230.2.51`) | `9df8ea5` — **3 commits + the whole Part B wave undeployed** |
+| Backend suite | **261 passed**, ruff clean, frontend image builds |
+| Dev DB | clean: 122 active docs, 0 uploads, 0 missing |
+| Dev `admin` | ✅ rotated off the E2E throwaway credential 2026-10-01; new value not recorded here |
+
+**Next Move (full list below):** commit + deploy → smoke-test.
 
 ## Important Details
 - Data: **`/home/roberto/RAGv2/ragseo-platform/09042026/`** (56 files, period Aug 28–Sep 3/4 2026). Contains **3 byte-identical duplicate pairs** under different names (verified by sha256); hash-dedup correctly skips them.
 - Importer runs **in-memory via Python `zipfile`** (no `unzip` binary); GSC `.csv.zip.zip` are single-level zips (test fixture built nested to prove recursion).
 - Deployment: frontend is a Docker `next-server` **prod build, no bind mount → rebuild container per UI change**. Backend + celery-worker bind-mount `./backend/app:/app/app:ro` → deploy via `up -d`. DB: pgvector Postgres via compose. Migrations auto-apply on container start via `backend/docker-entrypoint.sh` (`python scripts/migrate.py`) — no manual alembic step. Full current-state notes: "Deployed state" below + `CONTEXT-2026-09-30.md`. ⚠️ `up -d` never rebuilds — see the gotcha section.
 - Alembic chain (current head **0010**): 0001_baseline → 0002_jobs → 0003_local_embeddings → 0004_external_data → 0005_job_stage_idempotency → 0006_doc_number_unique → 0007_login_throttle → 0008_learning_loop → 0009_user_soft_delete → 0010_audit_logs. Conftest `ALL_TABLES` includes external + audit tables (sqlite fixture creates them).
-- Tests: last green run was **204 passed / 2 failed** (both failures are the known stale-image baked-files issue, not code). ⚠️ **Not currently runnable on this host** — the `PYTHONPATH=/tmp/opencode/ragseo-deps` venv and `ruff/bin/ruff` were wiped from `/tmp/opencode`; rebuild the image and run via `docker compose exec backend python -m pytest -m "not integration"` (dev bind-mounts `app/` but **not** `tests/`). Frontend gate = `docker build ./frontend` (lint + types).
-- Compose mount for backend + worker: `./09042026:/app/external:ro`; `settings.external_data_path=/app/external`.
+- Tests: **261 passed / 0 failed** as of 2026-10-01. **Runnable on this host, no rebuild needed:**
+  `docker compose exec backend python -m pytest -q` — dev compose now mounts `./backend/tests`
+  and `./backend/pytest.ini` (the image can never carry them; `backend/.dockerignore` excludes
+  `tests/`). Lint without a local binary:
+  `docker run --rm -v "$PWD/backend:/w" -w /w ghcr.io/astral-sh/ruff:0.16.8 check app/ tests/`.
+  Frontend gate = `docker build ./frontend` (lint + types, full gate in one).
+- Compose mounts for backend + worker: `./09042026:/app/external:ro`, `./external_uploads:/app/uploads/external`, `./doctrine_uploads:/app/uploads/doctrine`; `external_data_path=/app/external`, `doctrine_upload_path=/app/uploads/doctrine`. ⚠️ In **prod compose the celery-worker had no `volumes:` block at all** — fixed 2026-10-01; the worker needs the upload mounts or its hourly reconcile misbehaves.
 - Writer provenance contract kept intact: market data exposed via new `market_sources` key (NOT `provenance`) to preserve `{"100":..,"130":..,"316":..,"316-C":..}` assertion.
 
 ## External-data build (completed)
@@ -135,11 +156,15 @@ Scope decisions: **vector/HNSW SKIPPED** (keep `vector(768)` + `ix_doc_chunks_em
 Read this first when resuming, especially **on a different machine**. Every line
 reference below was re-read in the code on 2026-10-01, not copied from memory.
 
-> ⚠️ **`CONTEXT-*.md` is gitignored** (`.gitignore:29` — session notes carry live prod
+> ⚠️ **`CONTEXT-*.md` is gitignored** (`.gitignore:30` — session notes carry live prod
 > passwords), so the `CONTEXT-*` files do **not** exist on a fresh clone. This section
 > is the tracked, portable copy of the outstanding-work list. The last session's
-> narrative (`CONTEXT-2026-10-01.md`) is local-only; everything needed to keep going
-> is here or below.
+> narrative (`CONTEXT-2026-10-01.md`, which also covers the afternoon doctrine-upload
+> session) is local-only; everything needed to keep going is here or below.
+>
+> **Start at "Where things stand right now" at the top of this file, then Next Move.**
+> Items 1 and 2 of section 2 below were fixed by the Part B wave — re-read the code before
+> acting on the old diagnosis, the line numbers and framing have moved.
 
 ### First steps on a new machine
 - `git clone` needs GitHub access. The dev box used a manually-installed `gh` 2.102.0
@@ -165,46 +190,52 @@ reference below was re-read in the code on 2026-10-01, not copied from memory.
    sufficient, a regression still serves 200.
 
 ### 2. Real code defects still in `main`
-- 🔴 **`reconcile_doctrine` would mark every upload `missing`** — the blocker for all
-  doctrine-upload work. `doc_ingestion.py:287` globs **only** `settings.doctrine_path`,
-  but the sweep at `:367-376` marks every `active` doc whose filename isn't in that scan,
-  and it runs **hourly** (`celery_app.py:39-42`, `crontab(minute=0)`). Fix: a
-  `doctrine_folders()` + `scan_doctrine_files()` union (model on `_external_folders`,
-  `routers/ingest.py:44-55`) used by **both** `ingest_all_docs` (`:129`) and
-  `reconcile_doctrine` (`:287`).
-- 🔴 **Prod `celery-worker` has no `volumes:` block** — `docker-compose.prod.yml:117`,
-  confirmed: no `volumes:` key anywhere in the block (the backend's is at `:93`). 2's
-  first item is not actually fixed until this exists, since the worker runs the hourly
-  reconcile and must see the same writable dir the API writes to. Prod `doctrine_path`
-  is the image layer (`backend/Dockerfile:15`, no volume) = ephemeral; dev is `:ro`.
-  Needs `doctrine_upload_path` in `config.py` (beside `:28-30`) plus a
-  `./doctrine_uploads:/app/uploads/doctrine` mount in **four** places: dev backend +
-  dev worker (`docker-compose.yml:88,121`) and prod backend + **prod celery-worker**.
-- 🟡 **`extract_doc_number` mangles non-conforming names** — `doc_ingestion.py:29-33`
-  falls back to `filename.split("_")[0].split(".")[0]`, and `extract_series` (`:36-41`)
-  returns `"misc"` for anything not starting with a digit. Verified: `Doc 100_Something.md`
-  → `100`/`100` ✅ and `Doc 316:Something.md` → `316`/`300` ✅, but
-  `Doc 100 - Something.md` → `"Doc 100 - Something"`/`misc` ❌ and `random.md` →
-  `"random"`/`misc` ❌. The fallback splits only on `_` and `.`, and that garbage is
-  **permanent** under `uq_documents_doc_number_active`, so a later legitimate `Doc 100 …`
-  can never take that number. Gate the upload path on `DOC_PATTERN` (`:18`), `.md`,
-  `len(filename) <= 255` (`Document.filename` is `String(255)`), ~10 MB cap, and 409 on
-  a name already in the baked `doctrine_path` (same reasoning as the baked-name refusal
-  at `routers/ingest.py:434-458`).
-- 🟡 **`log_audit` commits the surrounding transaction** (`services/audit.py:6-15`) —
+**First three items — all FIXED 2026-10-01, validated, still uncommitted.** See
+"Doctrine upload — SHIPPED" below for the implementation. Re-read the code before acting
+on the old diagnosis; line numbers and the glob-vs-union framing have moved.
+- ✅ **`reconcile_doctrine` marked every upload `missing`** — the blocker for all
+  doctrine-upload work. It globbed only `settings.doctrine_path`, while the sweep marked
+  every `active` doc whose filename was absent from that scan, on an **hourly** beat
+  (`celery_app.py:39-42`, `crontab(minute=0)`). Fixed with a `doctrine_folders()` +
+  `scan_doctrine_files()` **union** (baked first, uploads second, deduped by filename),
+  used by **both** `ingest_all_docs` and `reconcile_doctrine`.
+- ✅ **Prod `celery-worker` had no `volumes:` block** — it ran the hourly reconcile with no
+  view of the upload dir the API wrote to. Fixed: `doctrine_upload_path` in `config.py` plus
+  a `./doctrine_uploads:/app/uploads/doctrine` mount in **all four** places (dev backend +
+  dev worker, prod backend + prod worker), alongside the existing `external_uploads` mount.
+- ✅ **`extract_doc_number` mangled non-conforming names** — the fallback
+  `filename.split("_")[0].split(".")[0]` produced garbage that is **permanent** under
+  `uq_documents_doc_number_active`, so a later legitimate `Doc 100 …` could never take that
+  number. The upload path now gates on `DOC_PATTERN`, `.md`, `len(filename) <= 255`
+  (`Document.filename` is `String(255)`), a 10 MB cap, and 409 on a name already in the
+  baked folder. `extract_doc_number` itself is unchanged — it still falls back, which is why
+  the 9 legacy `misc` library docs keep their odd identities.
+- 🟡 **`log_audit` commits the surrounding transaction** (`services/audit.py:6-15`) — **still open**;
   harmless on read-only routes but not side-effect free, and it already caused one real
   bug: `delete_user` lost its explicit `db.commit()` and persisted only as a side effect
   of `log_audit`. It was restored **after** the `log_audit` call on purpose — placing it
   before would let a crash in between delete a user with no audit row.
 
-### 3. Unverified work
-**`backend/tests/test_jobs_export.py` (364 lines, `0fa1b6b`) has never been run.** Dev
-bind-mounts only `./backend/app` (`docker-compose.yml:96`), **not `tests/`**, and
-`/tmp/opencode` was wiped. `pytest==8.3.3` *is* in the image (`requirements.txt:17`), so
-rebuild the image and run the suite. The same rebuild should clear the **2 known
-`test_external_ingest` failures** (stale image still carrying the 56 pre-purge baked
-files). Last green run: **204 passed / 2 failed**. `ruff check` also can't run locally
-(the binary was in `/tmp/opencode`) — re-fetch 0.16.8 to match `backend/pyproject.toml`.
+### 3. Unverified work — ✅ RESOLVED 2026-10-01
+`tests/test_jobs_export.py` **has now been run** and passes. Full suite: **261 passed / 0 failed**.
+
+⚠️ **The "rebuild the image first" note was wrong, and the recorded cause of the 2
+`test_external_ingest` failures was wrong too.** Both corrections matter:
+- `backend/.dockerignore` ends with `tests/` (and omits `pytest.ini`), so an image rebuild
+  **can never** carry the suite. `docker-compose.yml` now mounts `./backend/tests:/app/tests:ro`
+  and `./backend/pytest.ini:/app/pytest.ini:ro` into the dev backend, so the suite runs with
+  **no rebuild at all**: `docker compose exec backend python -m pytest -q`.
+- The 2 failures were **not** a stale image. `/app/external` is a *bind mount* of the
+  gitignored `09042026/` weekly-export folder (`docker-compose.yml`), which legitimately holds
+  56 files; the tests asserted post-purge counts against a host directory they never controlled.
+  Fixed at the source with an autouse `isolated_scan_roots` fixture in
+  `tests/test_external_ingest.py` that points **both** `external_data_path` and
+  `external_upload_path` at empty tmp dirs. A test that reads whatever the host machine
+  happens to hold is not a test.
+
+**Lint gate without a local ruff binary:** `docker run --rm -v "$PWD/backend:/w" -w /w
+ghcr.io/astral-sh/ruff:0.16.8 check app/ tests/` (and `format --check`) — no install needed,
+version pinned to match `backend/pyproject.toml`. Both are clean.
 
 ### 4. Debt, not defects
 - **10 pages duplicate the shell** (`AuthGuard` + `Sidebar` + `Header`) —
@@ -216,16 +247,29 @@ files). Last green run: **204 passed / 2 failed**. `ruff check` also can't run l
 
 ## Next Move
 
-0. **⛔ DEPLOY `0fa1b6b` TO THE VPS — still outstanding, do this first.**
-   Three commits are pushed but prod is still on `9df8ea5`, so **two live prod
+0. ~~**Rotate the dev `admin` password**~~ ✅ done 2026-10-01 — new 24-char random credential,
+   bcrypt cost 12, all existing admin sessions revoked, then verified over real HTTP: the old
+   credential returns 401, the new one returns 200 on login *and* on an admin-only route, and
+   that verification session was revoked too so no live cookie is left behind.
+   The value is deliberately **not** written to any tracked file or CONTEXT note — the hash
+   lives only in the dev DB. The pre-E2E password was never recoverable; don't hunt for it.
+   The dev `smoke_writer` account is **not** from this session: `audit_logs` dates its only
+   entry to 2026-09-27 (a denied `GET /api/users` — a writer probing an admin route), and its
+   soft-deleted twin is stamped the same day. It predates Part B and is someone else's test
+   account, so **leave it alone**; an earlier note here called its provenance unconfirmed,
+   which the audit trail now settles.
+1. **⛔ COMMIT + DEPLOY TO THE VPS.** Prod is still on `9df8ea5`, so **two live prod
    bugs are unfixed**:
    - the **`celery-worker` split-brain** — it runs the pre-TSR image (old
      `orchestrator.py` — no `retry_job()`, no GATE-2 guard) while the API serves
      `POST /api/jobs/{id}/retry`. HTTP smoke tests cannot detect this because
-     they only exercise the API container.
+     they only exercise the API container. Fixed by `af08d60` (shared
+     `ragseo-backend:local` tag).
    - **`/docs` serves Swagger, not Doctrine** — Caddy shadows the frontend's
-     Doctrine Reference section. This also blocks the doctrine-upload UI, which
-     is planned for `/docs`.
+     Doctrine Reference section. Fixed by `0fa1b6b`. Also the route the
+     doctrine-upload card lives on, so it must land before that card is visible.
+   - The **Part B doctrine-upload wave is uncommitted** (15 modified + 3 new
+     files). Commit it in the same push so prod picks it up in one deploy.
    ```bash
    cd /opt/ragseo-platform
    git pull origin main
@@ -239,14 +283,24 @@ files). Last green run: **204 passed / 2 failed**. `ruff check` also can't run l
    Then smoke-test: log in → must land on `/` (Dashboard) and Back must not
    return to `/login`; `/docs` must render Doctrine (body must **not** contain
    `swagger-ui`) and `/api/meta/docs` must be the Swagger UI.
-1. ~~**Commit the working tree**~~ ✅ done — `0fa1b6b` pushed, tree clean.
-2. **Run the backend suite.** `tests/test_jobs_export.py` (364 lines) is
-   committed but its run is **unverified** — see the "Backend tests" note below.
-3. **Doctrine upload (Part B) — designed, not started.** Full plan in
-   "Doctrine upload — planned, NOT started" above. Two things to settle first:
-   the `reconcile_doctrine` blocker and the missing prod `celery-worker` volume.
+2. ~~**Commit the `0fa1b6b` wave**~~ ✅ pushed. The **Part B wave is not** — see Next Move 1.
+3. ~~**Run the backend suite**~~ ✅ done 2026-10-01 — **261 passed**, `test_jobs_export.py`
+   included, ruff clean. See section 3.
+4. ~~**Doctrine upload (Part B)**~~ ✅ **built and validated end-to-end 2026-10-01**, not yet
+   committed or deployed. See "Doctrine upload — SHIPPED" below. Deploys with the rest of
+   this wave; it needs the Next Move 1 deploy to land first (the UI lives on `/docs`).
+5. **Open debt, no urgency** — `log_audit` still commits its caller's transaction
+   (section 2); the shell/`api.ts` duplication in section 4; and no backup coverage for
+   uploaded **bytes** — `scripts/backup_db.sh` dumps the DB only, and its header comment
+   already flagged upload dirs as an open follow-up. `doctrine_uploads` is a second one now.
 
-## Deployed state — ⚠️ prod is STILL on `9df8ea5`; three commits are deployed-nowwhere
+### Deploy note for this wave
+`./doctrine_uploads/` must exist on the VPS before the first `up -d` (Docker creates the bind
+mount automatically as root, which is fine, but the dir is gitignored so a fresh clone has no
+tracked copy — `mkdir -p doctrine_uploads` if the mount comes up empty). Baked `doctrine/` is
+still the image layer with no volume, so it is ephemeral by design — uploads are the durable copy.
+
+## Deployed state — ⚠️ prod is STILL on `9df8ea5`; 3 commits + the Part B wave are deployed-nowhere
 - 📄 **The "HANDOFF — outstanding fixes" section above is the canonical work list**
   (verified 2026-10-01, portable across machines — `CONTEXT-*.md` is gitignored).
 - **VPS (`157.230.2.51`) still runs `9df8ea5`.** Nothing has been redeployed since
@@ -257,7 +311,9 @@ files). Last green run: **204 passed / 2 failed**. `ruff check` also can't run l
   - `af08d60` shared image tag (`docker-compose.prod.yml`)
   - `dff3578` post-login landing at `/` (frontend only)
   - `0fa1b6b` Markdown export + the `/docs` unblock (Caddyfile + FastAPI doc URLs)
-- Both prod bugs named in **Next Move 0** are therefore **still live**.
+- Both prod bugs named in **Next Move 1** are therefore **still live**.
+- ⚠️ Dev `admin` is on a throwaway credential and the original hash is unrecoverable —
+  **Next Move 0**, above.
 - ~~All previously-undelivered work shipped.~~ Superseded by the above.
 - **`2738159`** best-practice cleanup — *deployed* (was "NOT deployed" in the
   2026-09-19 notes below; that status is superseded).
@@ -393,47 +449,84 @@ planned for `/docs`, so this had to be cleared first.
   serves a 200 (Swagger). `prompts/03-push-redeploy.md` now greps the `/docs` body for
   `swagger-ui` and fails loudly.
 
-## Doctrine upload — planned, NOT started
-Goal: a logged-in user can upload new doctrine `.md` files through the web UI. Mirrors the
-proven `POST /api/ingest/external/upload` pattern (`routers/ingest.py:358-410`). Nothing
-written yet; decisions taken with the user: **`require_writer`** (admin+writer, so the UI
-goes on `/docs` — `/ingest` is admin-gated at `app/ingest/page.tsx:31`), **keep auto-supersede
-but return which active doc was superseded**, and **inline but scoped** to the uploaded files.
-- **`/docs` now resolves to the frontend in the tree** (`0fa1b6b` removed the Caddy
-  shadowing) — so the target page for this feature is reachable. **But prod still serves
-  Swagger there** until that commit is deployed, so this work must not ship before the
-  deploy in Next Move 0 or the feature lands on a 404-ish page.
-- **🔴 BLOCKER — `reconcile_doctrine` would mark every upload `missing`.** It globs **only**
-  `settings.doctrine_path` (`services/doc_ingestion.py:287`) yet sweeps every active doc whose
-  filename isn't in that scan to `status="missing"` (`:370-376`), and it runs **hourly on the
-  worker** (`celery_app.py:39-42`). An upload written to any other directory is ingested, then
-  flipped to `missing` within the hour. Fix first: a `doctrine_folders()` + `scan_doctrine_files()`
-  union (copy of `_external_folders`, `routers/ingest.py:44-55`) used by **both**
-  `ingest_all_docs:129` and `reconcile_doctrine:287`.
-- **No writable doctrine dir exists.** Prod `doctrine_path` is the image layer (`Dockerfile:15`,
-  no volume) = ephemeral; dev is bind-mounted `:ro`. Needs `doctrine_upload_path` in `config.py`
-  (beside `:28-30`) + a `./doctrine_uploads:/app/uploads/doctrine` mount in **four** places:
-  dev backend + dev worker (`docker-compose.yml:88,121`) and prod backend + **prod celery-worker,
-  which currently has no `volumes:` block at all** (`docker-compose.prod.yml:117-145`). The
-  worker mount is what stops its hourly reconcile from mass-marking uploads `missing`.
-- **Validation must reject what the parser silently mangles.** `extract_doc_number`
-  (`:29-33`) returns the whole filename when there is no `_`/`:` after the number, so
-  `Doc 100 - Something.md` → `doc_number="Doc 100 - Something"`, `series="misc"`, and that
-  garbage becomes permanent under `uq_documents_doc_number_active`. Gate on `DOC_PATTERN`
-  (`:18`), `.md`, `len(filename) <= 255` (`Document.filename` is `String(255)`), a ~10 MB cap,
-  and reject a name that already exists in baked `doctrine_path` (409) so an upload can't
-  silently shadow a baked doc — same reasoning as the baked-name refusal in the external
-  delete handler (`ingest.py:434-458`).
-- Extract the per-file body into `_ingest_one()` so `ingest_all_docs` and the new
-  `ingest_files(db, paths)` share the supersede-before-`flush()` discipline (`:198-207`);
-  extract `_rebuild_references(db, active_only)` from `:245-257` / `:381-393` (they differ:
-  all docs vs active only).
-- `python-multipart==0.0.9` is already installed (`requirements.txt:15`). No new model → no
-  migration. `_safe_filename` (`ingest.py:58-64`) should be promoted to a shared
-  `services/uploads.py` rather than imported privately across routers.
-- Uploaded doctrine is gitignored (like `external_uploads/`), survives VPS `git pull`, not a
-  from-scratch rebuild; `scripts/backup_db.sh` covers DB rows only, not the `.md` bytes.
-  No delete/revert UI — removal leaves the doc `missing`, and superseding is one-way.
+## Doctrine upload — SHIPPED 2026-10-01 (in tree, validated, NOT committed/deployed)
+A logged-in user can upload doctrine `.md` through `/docs`. Mirrors the proven
+`POST /api/ingest/external/upload` pattern. **Verified end-to-end against the running dev
+stack** (real HTTP upload → DB row → agent-facing retrieval → 4× `reconcile_doctrine`), suite
+**261 passed**, ruff clean, `docker build ./frontend` green.
+- **Endpoint** `POST /api/ingest/doctrine/upload`, **`require_writer`** (so the card goes on
+  `/docs`; `/ingest` is admin-gated). Per-file results; audits `doctrine.upload`.
+  Response names **which active doc each upload superseded** — superseding a governing doc is
+  the most consequential thing this does and is not reversible from the website.
+- **🔴 The blocker is fixed and has a dedicated regression test.**
+  `doctrine_folders()` + `scan_doctrine_files()` in `services/doc_ingestion.py` scan the baked
+  library **and** `doctrine_upload_path` as a union, used by `ingest_all_docs`, `ingest_files`
+  **and** `reconcile_doctrine`. `tests/test_doctrine_upload.py::test_reconcile_does_not_mark_uploads_missing`
+  runs the sweep 4× and asserts the upload stays `active` — it is the load-bearing test of this
+  wave. Baked wins a filename collision; the sweep still marks genuinely-absent files missing.
+- **Config + mounts**: `doctrine_upload_path = "/app/uploads/doctrine"` beside the existing
+  upload paths, mounted `./doctrine_uploads:/app/uploads/doctrine` in **four** places — dev
+  backend + dev worker, prod backend + **prod celery-worker, which had no `volumes:` block at
+  all**. The worker mount is what stops the hourly reconcile from mass-marking uploads
+  `missing`. `doctrine_uploads/` is gitignored like `external_uploads/`.
+  ⚠️ **The prod worker was also missing the `./external_uploads` mount**, so its
+  `import_external_folder` had nothing to read — fixed in the same edit.
+- **Validation rejects what the parser silently mangles**, all **before** anything is written
+  to disk, and rejects the **whole batch** so a typo cannot half-apply: `DOC_PATTERN`, `.md`,
+  `len(name) <= 255`, 10 MB/file (413), and **409 on a baked-library filename** (an accepted
+  upload shadowing a library file would be reported as ingested and then silently ignored by
+  every later scan, since `scan_doctrine_files` resolves collisions toward baked).
+- **`_ingest_one()`** now owns the per-file body for all three callers, keeping the
+  supersede-before-`flush()` discipline that `uq_documents_doc_number_active` demands.
+  `_rebuild_references(db, active_only)` replaces the two divergent copies.
+  ⚠️ **Per-file `db.begin_nested()` savepoints, not `db.rollback()`** — a session-wide rollback
+  would discard every document already ingested earlier in the same scan.
+  `test_ingest_files_isolates_a_bad_file` pins this: a non-UTF-8 file between two good ones
+  must not cost the later file.
+- **Two behaviour improvements found while building it** (both are fixes, not features):
+  a doc whose file **returns** to disk is restored `missing`/`superseded` → `active`
+  (previously a restored file stayed invisible to retrieval forever), and a *changed* file
+  whose row was superseded is reactivated rather than left shadowed.
+- `safe_filename()` promoted to **`services/uploads.py`** (was `_safe_filename` private to
+  `routers/ingest.py`); both routers import it. Path traversal in a multipart filename is
+  stripped to the basename.
+- `ingest_files()` is **scoped**: it can never mark anything `missing` and never re-embeds the
+  library. It does rebuild the reference graph so new cross-refs show up immediately.
+  `test_upload_does_not_sweep_unrelated_docs` pins that.
+- **Two validation holes closed after the first green run** (both found by re-reading the diff
+  against the real library rather than by a test failing):
+  1. `DOC_PATTERN` is now **anchored** (`^Doc`). Unanchored, `old Doc 100_Title.md` was accepted
+     and became a second live **Doc 100** — the frontend's own `DOC_NAME` check is anchored, so
+     an API-only caller could slip past the UI's rule. All 122 library files still match, so
+     nothing was lost. `test_upload_rejects_a_doc_number_that_is_not_at_the_start` pins it.
+  2. The scan matches the extension **case-insensitively** (`p.suffix.lower() == ".md"` instead of
+     `glob("*.md")`, which is case-sensitive on Linux). The validator accepts `.MD` — a
+     Windows-authored name — so such a file was ingested, reported live, then swept to `missing`
+     within the hour. `test_uppercase_extension_survives_the_hourly_sweep` pins it.
+- ⚠️ **`docker compose restart backend` after editing app code.** The dev API has no `--reload`,
+  so a bind-mounted edit is invisible until restart — a request can be served by pre-edit code
+  and *look* like a validation failure. This cost a confused E2E cycle; check the container's
+  copy of the file before believing a result.
+- **Frontend**: `components/docs/DoctrineUploadCard.tsx` on `/docs`, writer-visible (hidden for
+  a read-only role rather than offering a 403 button), **client-side pre-check** mirroring the
+  server caps so a typo is caught instantly. On success it revalidates **every** cached
+  `/api/docs*` key — an upload changes the total, the series breakdown and the page at once.
+- ⚠️ **9 of the 122 library files do not match `DOC_PATTERN`** (e.g. `Document Registry.md`,
+  `SYSTEM_SCHEMAS.md`) and are ingested with `series="misc"` via the fallback. Uploaded files
+  are held to the strict rule the library itself doesn't follow; those 9 are curated ops
+  content, editable only via `sync_doctrine.sh`. Left as-is deliberately.
+- Uploaded doctrine survives `git pull` but not a from-scratch rebuild; `backup_db.sh` covers
+  DB rows only, not the `.md` bytes. **No delete/revert UI** — removing a file leaves the doc
+  `missing`, and superseding is one-way.
+- **E2E was cleaned up afterwards**: every temporary writer, session, audit row, uploaded file
+  and throwaway doc number was removed. Dev DB is back to **122 active docs, 122 files, 0
+  uploads, 0 missing**, users `admin` + `smoke_writer`. ⚠️ **`admin` is on the throwaway
+  the throwaway E2E credential, then rotated the same day (Next Move 0); `smoke_writer`
+  predates this session and was left alone.
+- Two E2E traps worth keeping: a doc that only *looks* removed from a scan is still `active` if
+  its row survived, and `reconcile_doctrine` creating rows is the fastest way to prove a filename
+  is genuinely accepted — the 3× sweep is what proves it is genuinely *kept*.
+
 
 ## Open items carried forward from 2026-09-19
 - ~~**Lint is still unverified**~~ — **RESOLVED 2026-09-30**: `next build` inside
@@ -460,6 +553,12 @@ but return which active doc was superseded**, and **inline but scoped** to the u
   `/root/.ssh/id_ed25519_ragseo`. Dev-box gh auth does not affect prod pulls.
 - Deploy SOP is git-driven (private `github.com/rlpalomo25/ragseo-platform`, VPS
   read-only deploy key); never push dev `.env`. Prod values: `/tmp/opencode/server.env`.
+- ⚠️ **The dev `admin` hash was overwritten on 2026-10-01** with a throwaway credential during
+  doctrine-upload E2E, then **rotated to a fresh random value the same day** (Next Move 0). The
+  pre-E2E password was never recoverable; the current one is not recorded in any tracked file.
+- `/tmp/opencode` is **still empty** (re-verified 2026-10-01 end of day): no `ragseo-deps` venv,
+  no `ruff` binary, no `server.env` copy. Get prod values from the VPS `.env`. `gh`, `node` and
+  `npm` states are unchanged from the notes above.
 
 ## Historical — Open items captured 2026-09-19 (deploy status since resolved)
 - ~~**Best-practice cleanup committed `2738159`, working tree clean, NOT deployed.
@@ -479,7 +578,8 @@ but return which active doc was superseded**, and **inline but scoped** to the u
 ## Relevant Files
 - Importer: `backend/app/services/external_ingest.py` · service: `backend/app/services/external_data.py` · models: `backend/app/models/external.py` · migration: `backend/alembic/versions/0004_external_data.py` · router: `backend/app/routers/ingest.py` · CLI: `backend/scripts/import_external.py` · agents: `backend/app/services/agents/{writer,router}.py`
 - Upload: `POST /api/ingest/external/upload` in `backend/app/routers/ingest.py` (writes `external_upload_path`); delete: `DELETE /api/ingest/external/delete` (same module, `delete_external_export` in `backend/app/services/external_ingest.py`). UI `frontend/src/components/ingest/ExternalDataCard.tsx` (upload form + per-row/bulk delete), page `frontend/src/app/exports/page.tsx`, hook `frontend/src/lib/hooks/useIngest.ts` (`uploadExternalFiles`, `deleteExternalFiles`), helper `frontend/src/lib/api.ts` (`apiUpload`). Mount `./external_uploads:/app/uploads/external` in both compose files (dev backend+worker, prod backend). Needs `python-multipart`.
-- Config/mount: `backend/app/config.py` (`external_data_path`, `external_upload_path`), `frontend/../docker-compose.yml` (backend+worker `./09042026:/app/external:ro` + `./external_uploads:/app/uploads/external`)
-- Tests: `backend/tests/test_external_ingest.py` (19 tests incl. upload + delete API), `backend/tests/conftest.py` (ALL_TABLES + imports)
+- Config/mount: `backend/app/config.py` (`external_data_path`, `external_upload_path`, `doctrine_path`, `doctrine_upload_path`), `docker-compose.yml` (dev backend+worker `./09042026:/app/external:ro` + `./external_uploads:/app/uploads/external` + `./doctrine_uploads:/app/uploads/doctrine`), `docker-compose.prod.yml` (prod backend + **prod celery-worker** — the worker had no `volumes:` block at all until now)
+- Tests: `backend/tests/test_external_ingest.py` (30 tests, autouse `isolated_scan_roots`), `backend/tests/test_doctrine_upload.py` (**33** tests — includes the two late fixes: `test_upload_rejects_a_doc_number_that_is_not_at_the_start`, `test_uppercase_extension_survives_the_hourly_sweep`, `test_scan_matches_extensions_case_insensitively`), `backend/tests/conftest.py` (ALL_TABLES + imports)
+- Doctrine upload: `POST /api/ingest/doctrine/upload` in `backend/app/routers/ingest.py` (writes `doctrine_upload_path`) · union scan + `_ingest_one`/`ingest_files`/`_rebuild_references` in `backend/app/services/doc_ingestion.py` (`doctrine_folders`, `scan_doctrine_files`) · shared `backend/app/services/uploads.py` (`safe_filename`) · UI `frontend/src/components/docs/DoctrineUploadCard.tsx` on `/docs` + `uploadDoctrineFiles` in `frontend/src/lib/hooks/useIngest.ts` · types in `frontend/src/types/ingest.ts`. No migration (no new model).
 - Frontend: `frontend/src/app/ingest/page.tsx` (ExternalDataCard), `frontend/src/types/ingest.ts`, `frontend/src/lib/hooks/useIngest.ts`
 - Draft export: `backend/app/services/markdown_export.py` (`select_writer_output`, `build_markdown`, `build_filename`) · route `GET /api/jobs/{id}/export.md` in `backend/app/routers/jobs.py` (writer-gated, 409 unless `approved`, audits `job.export`) · tests `backend/tests/test_jobs_export.py` · UI `frontend/src/app/jobs/[jobId]/page.tsx` + `apiDownload` in `frontend/src/lib/api.ts` · FastAPI doc URLs `/api/meta/docs` + `/api/meta/redoc` in `backend/app/main.py` (`/openapi.json` stays at root)
