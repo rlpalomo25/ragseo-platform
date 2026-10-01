@@ -6,9 +6,9 @@ Ingest weekly external market data (GSC/GA4/Ubersuggest/calls/leads from `090420
 ## Important Details
 - Data: **`/home/roberto/RAGv2/ragseo-platform/09042026/`** (56 files, period Aug 28–Sep 3/4 2026). Contains **3 byte-identical duplicate pairs** under different names (verified by sha256); hash-dedup correctly skips them.
 - Importer runs **in-memory via Python `zipfile`** (no `unzip` binary); GSC `.csv.zip.zip` are single-level zips (test fixture built nested to prove recursion).
-- Deployment: frontend is a Docker `next-server` **prod build, no bind mount → rebuild container per UI change**. Backend + celery-worker bind-mount `./backend/app:/app/app:ro` → deploy via `up -d`. DB: pgvector Postgres via compose. Migrations auto-apply on container start via `backend/docker-entrypoint.sh` (`python scripts/migrate.py`) — no manual alembic step. Full current-state notes: "Deployed state (2026-09-30)" below + `CONTEXT-2026-09-30.md`.
-- Alembic chain: 0001_baseline → 0002_jobs → 0003_local_embeddings → **0004_external_data**. Conftest `ALL_TABLES` now includes external tables (sqlite fixture creates them).
-- Test runner: `cd backend && PYTHONPATH=/tmp/opencode/ragseo-deps python3 -m pytest` → **130 passed** (was 121; +9 external tests). Frontend: lint clean, build clean (11 routes, `/ingest` 5.2 kB).
+- Deployment: frontend is a Docker `next-server` **prod build, no bind mount → rebuild container per UI change**. Backend + celery-worker bind-mount `./backend/app:/app/app:ro` → deploy via `up -d`. DB: pgvector Postgres via compose. Migrations auto-apply on container start via `backend/docker-entrypoint.sh` (`python scripts/migrate.py`) — no manual alembic step. Full current-state notes: "Deployed state" below + `CONTEXT-2026-09-30.md`. ⚠️ `up -d` never rebuilds — see the gotcha section.
+- Alembic chain (current head **0010**): 0001_baseline → 0002_jobs → 0003_local_embeddings → 0004_external_data → 0005_job_stage_idempotency → 0006_doc_number_unique → 0007_login_throttle → 0008_learning_loop → 0009_user_soft_delete → 0010_audit_logs. Conftest `ALL_TABLES` includes external + audit tables (sqlite fixture creates them).
+- Tests: last green run was **204 passed / 2 failed** (both failures are the known stale-image baked-files issue, not code). ⚠️ **Not currently runnable on this host** — the `PYTHONPATH=/tmp/opencode/ragseo-deps` venv and `ruff/bin/ruff` were wiped from `/tmp/opencode`; rebuild the image and run via `docker compose exec backend python -m pytest -m "not integration"` (dev bind-mounts `app/` but **not** `tests/`). Frontend gate = `docker build ./frontend` (lint + types).
 - Compose mount for backend + worker: `./09042026:/app/external:ro`; `settings.external_data_path=/app/external`.
 - Writer provenance contract kept intact: market data exposed via new `market_sources` key (NOT `provenance`) to preserve `{"100":..,"130":..,"316":..,"316-C":..}` assertion.
 
@@ -132,36 +132,39 @@ Scope decisions: **vector/HNSW SKIPPED** (keep `vector(768)` + `ix_doc_chunks_em
 - **Frontend verified via `docker build ./frontend`** — no Node/npm on this host, so `tsc --noEmit`/`npm run lint` still cannot run directly here (standing caveat below), but `next build` (which fails on TS errors) completed, so the frontend type-checks inside the image.
 
 ## Next Move
-0. ~~**⛔ DEPLOY THIS WAVE TO THE VPS**~~ ✅ **done 2026-09-30.** Deployed and smoke-tested;
-   prod is on `9df8ea5`. **Unresolved caveat from that deploy:** the build was run as
-   `build backend` + `build frontend` only, so `celery-worker` likely still runs the
-   **pre-TSR** image (old `orchestrator.py` — no `retry_job()`, no GATE-2 guard).
-   Verify + remediate:
-   - `docker compose -f docker-compose.prod.yml build celery-worker` then
-     `docker compose -f docker-compose.prod.yml up -d celery-worker`, **or** just re-run
-     `build backend celery-worker frontend` to converge both tags.
-   - Confirm both images carry the same build: compare
-     `docker images ragseo-platform-backend ragseo-platform-celery-worker --format '{{.ID}}'`
-     and check the worker is running the newest ID.
-   - Then re-verify `SELECT version_num FROM alembic_version;` reads `0010_audit_logs`
-     and that an *existing* user can still log in (exercises the global soft-delete
-     filter + the `ix_users_username` → `uq_users_username_active` swap on real rows).
-   - **Permanent fix: ✅ done 2026-09-30 (uncommitted at time of writing).** Both
-     `backend` and `celery-worker` in `docker-compose.prod.yml` now share
-     `image: ragseo-backend:local`, and `prompts/03-push-redeploy.md` builds
-     `backend celery-worker frontend` with a `docker inspect` convergence check.
-     With a shared tag, `build backend` alone can no longer leave a stale worker —
-     but the **first** deploy after this change must still build both explicitly,
-     because the VPS's existing containers were created from the old independent
-     tags and `up -d` won't retag them retroactively.
-1. ~~**Commit the working tree**~~ ✅ done — two commits (backend wave, then frontend/Docker).
-2. **Frontend has no Node on the dev host**: `npx tsc --noEmit && npm run lint` still need a Node
-   machine. `next build` inside `docker build ./frontend` does type-check, and it passed.
+0. **⛔ DEPLOY `dff3578` TO THE VPS — still outstanding, do this first.**
+   `af08d60` + `dff3578` are pushed but prod is still on `9df8ea5`. The
+   `celery-worker` split-brain is **still live**: it runs the pre-TSR image
+   (old `orchestrator.py` — no `retry_job()`, no GATE-2 guard) while the API
+   serves `POST /api/jobs/{id}/retry`. HTTP smoke tests cannot detect this
+   because they only exercise the API container.
+   ```bash
+   cd /opt/ragseo-platform
+   git pull origin main
+   docker compose -f docker-compose.prod.yml build backend celery-worker frontend
+   docker compose -f docker-compose.prod.yml up -d
+   # convergence — both IDs must now be identical (shared ragseo-backend:local tag)
+   docker inspect -f '{{.Image}}' ragseo-platform-backend-1 ragseo-platform-celery-worker-1
+   docker compose -f docker-compose.prod.yml exec db psql -U ragseo -d ragseo \
+     -c "SELECT version_num FROM alembic_version;"      # expect 0010_audit_logs
+   ```
+   Then smoke-test the new landing page: log in → must land on `/` (Dashboard),
+   and Back must not return to `/login`.
+1. ~~**Commit the working tree**~~ ✅ done — `af08d60` + `dff3578` pushed, tree clean.
+2. **Doctrine upload (Part B) — designed, not started.** Full plan in
+   "Doctrine upload — planned, NOT started" above. Two things to settle first:
+   the `reconcile_doctrine` blocker and the missing prod `celery-worker` volume.
 
-## Deployed state (2026-09-30) — everything below is now LIVE on prod
-- **Local == `origin/main` == VPS == `9df8ea5`.** Smoke tests 200 (`/api/health`,
-  `/exports`, 401 on protected DELETE). Session: `CONTEXT-2026-09-30.md`.
-- **All previously-undelivered work shipped.** Nothing is pending deploy as of this date.
+## Deployed state — ⚠️ prod is STILL on `9df8ea5`; two commits are deployed-nowhere
+- **VPS (`157.230.2.51`) still runs `9df8ea5`.** Nothing has been redeployed since
+  the earlier 2026-09-30 session (smoke tests were 200 at that point).
+  Session: `CONTEXT-2026-09-30.md`.
+- **Local == `origin/main` == `dff3578` — in sync, pushed.** So these are in the
+  tree and on GitHub but **not** on prod:
+  - `af08d60` shared image tag (`docker-compose.prod.yml`)
+  - `dff3578` post-login landing at `/` (frontend only)
+- The `celery-worker` stale-image caveat below is therefore **still live**.
+- ~~All previously-undelivered work shipped.~~ Superseded by the above.
 - **`2738159`** best-practice cleanup — *deployed* (was "NOT deployed" in the
   2026-09-19 notes below; that status is superseded).
 - **`653f9aa`** deploy hardening — fail-fast secrets in `config.py`, compose
@@ -208,13 +211,94 @@ above. Only the deploy-relevant facts repeated here:
   `docker compose -f docker-compose.prod.yml build frontend`. That's what made
   `9df8ea5` (`frontend/Dockerfile` +6, compose +12) a full-image deploy.
 
-## Open items carried forward from 2026-09-19 (still open)
-- **Frontend has NO Node in this env** — all frontend edits were manual-review
-  surgical only; `tsc --noEmit`/`next lint` must run locally before pushing the
-  frontend image. Standing mitigation: `next build` inside `docker build ./frontend`
-  fails on TS errors, so the image build **is** a real type-check (it passed for
-  `9df8ea5`). Lint is still unverified. Flagged refactors: shared dashboard layout
-  (8 × duplicated AuthGuard+Sidebar+Header shell), status-variant maps, api.ts EXTRA DRY.
+## Post-login landing page + doctrine upload design (2026-09-30, later session)
+### `dff3578` — `/` is now the post-login landing page (frontend only, PUSHED, not deployed)
+`/` already rendered the Dashboard since `9df8ea5`; only the redirect target was wrong.
+- `app/login/page.tsx:32`: `router.push("/docs")` → `router.replace("/")`.
+- `components/layout/AuthGuard.tsx:14,18`: both redirects `push` → `replace`. With `push`,
+  `/login` stayed in the back-stack so Back after signing in bounced to a login-gated URL.
+- `app/login/page.tsx`: added an effect bouncing an already-authenticated visitor off `/login`.
+- **Naming trap:** the new effect needs auth-loading, but the page already binds `loading`
+  to the *submit button's* pending state (`:14`). Must alias — `const { user, loading: authLoading, refresh }`.
+  A same-name destructure is a hard `Failed to compile`, not a lint warning.
+- Verified in the built bundle, not by HTTP (the redirect is client-side, so a 200 proves
+  nothing): the login chunk has 2 `replace` call sites, 0 `push`, 0 `"/docs"`; every
+  AuthGuard copy across all 7 page chunks uses `replace` for both branches.
+- No backend change, no migration, no `docs` route change. Writers/admins both reach `/`
+  (`page.tsx:11` has no `requireAdmin`).
+
+### ⚠️ `docker compose up -d <svc>` does NOT rebuild — even with a `build:` key
+Hit live this session: `docker compose up -d frontend` reported "Container … Running" and
+changed nothing, because the image already existed. Same class of bug as the `celery-worker`
+trap, and it applies to **every** service including the frontend. Always:
+```bash
+docker compose build frontend && docker compose up -d --force-recreate frontend
+```
+Check with `docker inspect -f '{{.Image}}' <container>` against `docker images <tag> --format '{{.ID}}'`.
+
+### ✅ The standing "lint unverified" caveat is now RESOLVED
+`next build` (step 8 of the frontend Dockerfile) prints `Linting and checking validity of types`
+and **fails on lint errors too**, not just TS. So `docker build ./frontend` is a full
+lint+type gate. This closes a caveat carried in four separate sections of this file.
+It also *caught* the `loading` collision above. Node is still absent on the host, so
+`npx tsc --noEmit` / `npm run lint` still need a Node machine for interactive iteration —
+but nothing needs to be pushed unverified.
+
+### ⚠️ Backend tests are NOT runnable on this host right now
+`/tmp/opencode` was wiped: `ragseo-deps` (the `PYTHONPATH` venv) and `ruff/bin/ruff` are gone,
+and no backend packages are installed system-wide (`import fastapi` fails). The recorded
+command no longer works. `pytest==8.3.3` *is* in the image (`requirements.txt:17`), but dev
+bind-mounts only `./backend/app` (`docker-compose.yml:96`) — **not `tests/`** — so tests need
+an image rebuild before `docker compose exec backend python -m pytest -m "not integration"`.
+The 2 known `test_external_ingest` failures (stale local image carrying the pre-purge 56
+baked files) are still unverified.
+
+## Doctrine upload — planned, NOT started
+Goal: a logged-in user can upload new doctrine `.md` files through the web UI. Mirrors the
+proven `POST /api/ingest/external/upload` pattern (`routers/ingest.py:358-410`). Nothing
+written yet; decisions taken with the user: **`require_writer`** (admin+writer, so the UI
+goes on `/docs` — `/ingest` is admin-gated at `app/ingest/page.tsx:31`), **keep auto-supersede
+but return which active doc was superseded**, and **inline but scoped** to the uploaded files.
+- **🔴 BLOCKER — `reconcile_doctrine` would mark every upload `missing`.** It globs **only**
+  `settings.doctrine_path` (`services/doc_ingestion.py:287`) yet sweeps every active doc whose
+  filename isn't in that scan to `status="missing"` (`:370-376`), and it runs **hourly on the
+  worker** (`celery_app.py:39-42`). An upload written to any other directory is ingested, then
+  flipped to `missing` within the hour. Fix first: a `doctrine_folders()` + `scan_doctrine_files()`
+  union (copy of `_external_folders`, `routers/ingest.py:44-55`) used by **both**
+  `ingest_all_docs:129` and `reconcile_doctrine:287`.
+- **No writable doctrine dir exists.** Prod `doctrine_path` is the image layer (`Dockerfile:15`,
+  no volume) = ephemeral; dev is bind-mounted `:ro`. Needs `doctrine_upload_path` in `config.py`
+  (beside `:28-30`) + a `./doctrine_uploads:/app/uploads/doctrine` mount in **four** places:
+  dev backend + dev worker (`docker-compose.yml:88,121`) and prod backend + **prod celery-worker,
+  which currently has no `volumes:` block at all** (`docker-compose.prod.yml:117-145`). The
+  worker mount is what stops its hourly reconcile from mass-marking uploads `missing`.
+- **Validation must reject what the parser silently mangles.** `extract_doc_number`
+  (`:29-33`) returns the whole filename when there is no `_`/`:` after the number, so
+  `Doc 100 - Something.md` → `doc_number="Doc 100 - Something"`, `series="misc"`, and that
+  garbage becomes permanent under `uq_documents_doc_number_active`. Gate on `DOC_PATTERN`
+  (`:18`), `.md`, `len(filename) <= 255` (`Document.filename` is `String(255)`), a ~10 MB cap,
+  and reject a name that already exists in baked `doctrine_path` (409) so an upload can't
+  silently shadow a baked doc — same reasoning as the baked-name refusal in the external
+  delete handler (`ingest.py:434-458`).
+- Extract the per-file body into `_ingest_one()` so `ingest_all_docs` and the new
+  `ingest_files(db, paths)` share the supersede-before-`flush()` discipline (`:198-207`);
+  extract `_rebuild_references(db, active_only)` from `:245-257` / `:381-393` (they differ:
+  all docs vs active only).
+- `python-multipart==0.0.9` is already installed (`requirements.txt:15`). No new model → no
+  migration. `_safe_filename` (`ingest.py:58-64`) should be promoted to a shared
+  `services/uploads.py` rather than imported privately across routers.
+- Uploaded doctrine is gitignored (like `external_uploads/`), survives VPS `git pull`, not a
+  from-scratch rebuild; `scripts/backup_db.sh` covers DB rows only, not the `.md` bytes.
+  No delete/revert UI — removal leaves the doc `missing`, and superseding is one-way.
+
+## Open items carried forward from 2026-09-19
+- ~~**Lint is still unverified**~~ — **RESOLVED 2026-09-30**: `next build` inside
+  `docker build ./frontend` fails on lint errors as well as TS errors, so the image build
+  is a full lint+type gate (it caught a real bug on `dff3578`). Node is still absent on
+  the dev host, so `npx tsc --noEmit`/`npm run lint` still need a Node machine for fast
+  iteration, but nothing needs pushing unverified. Flagged refactors (all still open):
+  shared dashboard layout (8 × duplicated AuthGuard+Sidebar+Header shell), status-variant
+  maps, api.ts EXTRA DRY.
 - **Rename ripple**: tests patch `tasks.session_scope` (was `tasks.SessionLocal`);
   `tests/test_external_data.py` imports `latest_export_ids`. Don't regress either.
 
