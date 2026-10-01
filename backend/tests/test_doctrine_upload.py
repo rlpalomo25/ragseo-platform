@@ -436,6 +436,90 @@ def test_upload_rejects_a_batch_that_sanitises_to_nothing(client, admin_user, do
     assert "No usable .md files" in r.json()["detail"]
 
 
+def test_upload_leaves_nothing_behind_when_a_later_file_is_oversized(
+    client, admin_user, db_session, doctrine_dirs, monkeypatch
+):
+    """A 413 must not half-apply the batch.
+
+    The caller reads a 413 as "nothing was saved". If the earlier file were
+    already in the upload dir, the hourly reconcile would ingest it on the next
+    sweep and the database would hold a document the response disowned.
+    """
+    import app.routers.ingest as ingest_router
+
+    _baked, uploads = doctrine_dirs
+    monkeypatch.setattr(ingest_router, "MAX_DOCTRINE_UPLOAD_BYTES", 32)
+    login_admin(client)
+    r = upload(
+        client,
+        [
+            ("Doc 610_First.md", b"# First\n\nFine on its own.\n"),
+            ("Doc 611_ Too Big.md", b"x" * 256),
+        ],
+    )
+    assert r.status_code == 413
+    # Ideally the folder is never created at all — nothing is moved in until
+    # every file has passed the cap.
+    assert not uploads.exists() or not list(uploads.iterdir())
+    assert db_session.query(Document).count() == 0
+
+
+def test_upload_streams_rather_than_buffering_the_batch(client, admin_user, doctrine_dirs, monkeypatch):
+    """Peak memory must not scale with file size.
+
+    `UploadFile.size` is hardcoded to 0 by starlette's multipart parser and never
+    updated, so the only way to enforce a byte cap is to read the bytes — which
+    is exactly why they have to be streamed in chunks and staged, not collected
+    into a list. A single read() of a 256-byte file is larger than CHUNK_BYTES,
+    so counting distinct reads proves the stream is being used.
+    """
+    import app.routers.ingest as ingest_router
+    from app.services import uploads as uploads_service
+
+    _baked, uploads = doctrine_dirs
+    monkeypatch.setattr(ingest_router, "MAX_DOCTRINE_UPLOAD_BYTES", 4096)
+    monkeypatch.setattr(uploads_service, "CHUNK_BYTES", 64)
+
+    reads: list[int] = []
+    real_stage = uploads_service.stage_uploads
+
+    async def counting_stage(entries, dest_dir, *, max_bytes):
+        for _name, upload in entries:
+            original_read = upload.read
+
+            async def read(size=-1, _o=original_read):
+                reads.append(size)
+                return await _o(size)
+
+            upload.read = read
+        return await real_stage(entries, dest_dir, max_bytes=max_bytes)
+
+    monkeypatch.setattr(uploads_service, "stage_uploads", counting_stage)
+    monkeypatch.setattr(ingest_router, "stage_uploads", counting_stage)
+
+    login_admin(client)
+    r = upload(client, [("Doc 612_ Streamed.md", b"y" * 256)])
+    assert r.status_code == 200
+    assert r.json()["created"] == 1
+    assert reads and set(reads) == {uploads_service.CHUNK_BYTES}, f"not chunked: {reads}"
+    assert (uploads / "Doc 612_ Streamed.md").is_file()
+
+
+def test_staging_dir_is_not_left_in_the_system_temp(client, admin_user, doctrine_dirs, tmp_path):
+    """A rejected batch must not leave a partial file where an import can find it.
+
+    `import_external_folder` walks its folder with rglob("*"), so a staging
+    directory placed beside the uploads would be ingested after a crash.
+    """
+    import tempfile
+    from pathlib import Path
+
+    before = set(Path(tempfile.gettempdir()).glob("ragseo-upload-*"))
+    login_admin(client)
+    upload(client, [("Doc 613_ Fine.md", b"# Fine\n\nBody.\n")])
+    assert set(Path(tempfile.gettempdir()).glob("ragseo-upload-*")) == before
+
+
 def test_upload_strips_directory_traversal(client, admin_user, db_session, doctrine_dirs):
     """A multipart part may claim any path; only the basename may survive."""
     _baked, uploads = doctrine_dirs

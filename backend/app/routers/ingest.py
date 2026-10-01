@@ -37,7 +37,7 @@ from app.services.external_ingest import (
     import_external_folder,
 )
 from app.services.learning_loop import snapshot_publications
-from app.services.uploads import safe_filename
+from app.services.uploads import UploadTooLarge, safe_filename, stage_uploads
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -288,23 +288,15 @@ async def upload_doctrine(
     upload_dir = Path(settings.doctrine_upload_path)
     baked = _baked_doctrine_names()
 
-    # Validate everything before writing anything, so a bad name in the batch
-    # cannot leave half of it on disk for the hourly reconcile to pick up.
-    planned: list[tuple[str, bytes]] = []
+    # Validate every name before reading a single byte, so a bad name anywhere in
+    # the batch cannot leave half of it on disk for the hourly reconcile to find.
+    planned: list[tuple[str, UploadFile]] = []
     for f in files:
         name = safe_filename(f.filename or "")
         if not name:
             continue
         _reject_unusable_doctrine_name(name, baked)
-        content = await f.read()
-        if len(content) > MAX_DOCTRINE_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=(
-                    f"'{name}' exceeds the {MAX_DOCTRINE_UPLOAD_BYTES // (1024 * 1024)} MB per-file limit"
-                ),
-            )
-        planned.append((name, content))
+        planned.append((name, f))
 
     if not planned:
         raise HTTPException(status_code=400, detail="No usable .md files in the upload")
@@ -327,12 +319,17 @@ async def upload_doctrine(
         if current:
             supersedes[name] = f"{current.doc_number} ({current.title})"
 
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    saved: list[Path] = []
-    for name, content in planned:
-        (upload_dir / name).write_bytes(content)
-        saved.append(upload_dir / name)
-        logger.info("User '%s' uploaded doctrine %s (%d bytes)", user.username, name, len(content))
+    try:
+        saved = await stage_uploads(planned, upload_dir, max_bytes=MAX_DOCTRINE_UPLOAD_BYTES)
+    except UploadTooLarge as e:
+        raise HTTPException(
+            status_code=413,
+            detail=f"'{e.name}' exceeds the {e.limit // (1024 * 1024)} MB per-file limit",
+        ) from e
+    for path in saved:
+        logger.info(
+            "User '%s' uploaded doctrine %s (%d bytes)", user.username, path.name, path.stat().st_size
+        )
 
     stats = ingest_files(db, saved)
     by_name = {entry["filename"]: entry for entry in stats.get("files", [])}
@@ -539,19 +536,22 @@ async def upload_external(
         upload_dir = upload_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    saved: list[Path] = []
+    # Staged rather than written in-loop: a size cap tripped on a later file must
+    # not leave earlier ones in the upload dir, where the caller believes nothing
+    # was saved and the next import sweep would ingest them anyway.
+    planned: list[tuple[str, UploadFile]] = []
     for f in files:
         name = safe_filename(f.filename or "")
         if not name:
             continue
-        content = await f.read()
-        if len(content) > MAX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413, detail=f"{name} exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"
-            )
-        (upload_dir / name).write_bytes(content)
-        saved.append(upload_dir / name)
-        logger.info("User '%s' uploaded %s (%d bytes)", user.username, name, len(content))
+        planned.append((name, f))
+
+    try:
+        saved = await stage_uploads(planned, upload_dir, max_bytes=MAX_UPLOAD_BYTES)
+    except UploadTooLarge as e:
+        raise HTTPException(status_code=413, detail=f"{e.name} exceeds {e.limit // (1024 * 1024)} MB") from e
+    for path in saved:
+        logger.info("User '%s' uploaded %s (%d bytes)", user.username, path.name, path.stat().st_size)
 
     results = []
     for p in saved:

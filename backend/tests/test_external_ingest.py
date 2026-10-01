@@ -483,6 +483,38 @@ def test_upload_rejects_oversized_file(client, test_user, tmp_path, monkeypatch)
     assert r.status_code == 413
 
 
+def test_upload_leaves_nothing_on_disk_when_a_later_file_is_oversized(
+    client, test_user, tmp_path, monkeypatch
+):
+    """A 413 must not half-apply the batch.
+
+    Writing each file as it was validated left the earlier ones in the upload
+    dir: the caller sees a 413 and assumes nothing was saved, but a later import
+    sweep would pick the orphans up and import data the response claimed to
+    have rejected.
+    """
+    import app.routers.ingest as ingest_router
+    from app.config import get_settings
+
+    uploads = tmp_path / "uploads"
+    monkeypatch.setattr(get_settings(), "external_upload_path", str(uploads))
+    monkeypatch.setattr(ingest_router, "MAX_UPLOAD_BYTES", 16)
+    from tests.conftest import login
+
+    login(client, "testwriter", "secret123")
+
+    good = "Leads_Summary_Week_08-28-2026_to_09-04-2026.txt"
+    r = client.post(
+        "/api/ingest/external/upload",
+        files=[
+            ("files", (good, b"col1\ncol2\n", "text/plain")),
+            ("files", ("huge.csv", b"x" * 64, "text/plain")),
+        ],
+    )
+    assert r.status_code == 413
+    assert not uploads.exists() or not list(uploads.iterdir())
+
+
 # ------------------------------------------------------------------- delete API
 
 
