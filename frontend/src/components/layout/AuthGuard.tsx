@@ -10,11 +10,13 @@ export function AuthGuard({ children, requireAdmin = false }: { children: React.
   const router = useRouter();
 
   useEffect(() => {
+    // replace, not push: the login-gated URL must not linger in the back-stack,
+    // or Back after signing in bounces straight back to /login.
     if (!loading && !user) {
-      router.push("/login");
+      router.replace("/login");
     }
     if (!loading && requireAdmin && user?.role !== "admin") {
-      router.push("/docs");
+      router.replace("/docs");
     }
   }, [user, loading, router, requireAdmin]);
 
