@@ -8,10 +8,13 @@ so it gets its own explicit regression test rather than riding along with the
 endpoint tests.
 """
 
+from pathlib import Path
+
 import pytest
 from app.config import get_settings
 from app.models.chunk import DocChunk
 from app.models.document import Document
+from app.routers import ingest as ingest_router
 from app.services.doc_ingestion import (
     ingest_all_docs,
     ingest_files,
@@ -518,6 +521,240 @@ def test_staging_dir_is_not_left_in_the_system_temp(client, admin_user, doctrine
     login_admin(client)
     upload(client, [("Doc 613_ Fine.md", b"# Fine\n\nBody.\n")])
     assert set(Path(tempfile.gettempdir()).glob("ragseo-upload-*")) == before
+
+
+# ------------------------------------------------- upload: atomicity of commit
+
+
+def test_commit_stages_on_the_destination_filesystem(client, admin_user, doctrine_dirs, monkeypatch):
+    """The commit must be a rename, not a copy.
+
+    `/tmp` and the upload bind mount are different devices (st_dev 59 vs 38 in
+    the containers), so `shutil.move` between them silently falls back to
+    copy+unlink. The destination then becomes observable part-written and a
+    concurrent reconcile can ingest a truncated file. Staging in a subdirectory
+    of the destination makes the commit a same-device `os.replace` rename, so
+    this asserts the precondition that makes the rename atomic.
+    """
+    from app.services import uploads as uploads_service
+
+    _baked, uploads = doctrine_dirs
+    seen: list[dict] = []
+
+    def record(staging: Path) -> None:
+        # Stat inside the hook: the staging dir is removed once the call returns.
+        seen.append(
+            {
+                "name": staging.name,
+                "parent": staging.parent,
+                "st_dev": staging.stat().st_dev,
+                "dest_st_dev": uploads.stat().st_dev,
+            }
+        )
+
+    real_stage = uploads_service.stage_uploads
+
+    async def capturing_stage(entries, dest_dir, *, max_bytes, before_commit=None):
+        return await real_stage(entries, dest_dir, max_bytes=max_bytes, before_commit=before_commit or record)
+
+    monkeypatch.setattr(uploads_service, "stage_uploads", capturing_stage)
+    monkeypatch.setattr(ingest_router, "stage_uploads", capturing_stage)
+
+    login_admin(client)
+    r = upload(client, [("Doc 614_ Same Device.md", b"# Same\n\nBody.\n")])
+    assert r.status_code == 200
+
+    assert seen, "before_commit hook never fired"
+    info = seen[0]
+    assert info["parent"] == uploads, "staging must live inside the destination dir"
+    assert info["name"].startswith(uploads_service.STAGING_PREFIX)
+    assert info["st_dev"] == info["dest_st_dev"], (
+        "staging and destination must share a filesystem or the commit is a non-atomic copy"
+    )
+
+
+def test_commit_renames_and_never_copies(client, admin_user, doctrine_dirs, monkeypatch):
+    """The commit must be `os.replace`, and `shutil.move` must never be called.
+
+    This is the load-bearing regression test, and it is deliberately about the
+    *mechanism* rather than the observable result. The test suite runs in
+    `tmp_path` under `/tmp`, so a `/tmp`-staged implementation would be on the
+    same filesystem as the destination and its `shutil.move` would be an atomic
+    rename anyway — a "was any partial size ever visible?" assertion passes for
+    such a mutant and proves nothing. The bug only appears in the containers,
+    where the upload dir is a bind mount on a different `st_dev` from `/tmp` and
+    `shutil.move` degrades to copy+unlink. Asserting the mechanism is the only
+    way to catch it here; `test_commit_stages_on_the_destination_filesystem`
+    covers the same ground from the path side.
+    """
+    import shutil as shutil_module
+
+    from app.services import uploads as uploads_service
+
+    _baked, uploads = doctrine_dirs
+    moved: list[str] = []
+    replaced: list[tuple] = []
+
+    real_move = shutil_module.move
+
+    def record_move(src, dst, *a, **k):
+        moved.append(f"{src} -> {dst}")
+        return real_move(src, dst, *a, **k)
+
+    real_replace = uploads_service.os.replace
+
+    def record_replace(src, dst, *a, **k):
+        replaced.append((str(src), str(dst)))
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(shutil_module, "move", record_move)
+    monkeypatch.setattr(uploads_service.os, "replace", record_replace)
+
+    login_admin(client)
+    r = upload(client, [("Doc 617_ Renamed.md", b"r" * 2048), ("Doc 618_ Also Renamed.md", b"q" * 2048)])
+    assert r.status_code == 200
+
+    assert moved == [], f"commit used shutil.move, which copies across filesystems: {moved}"
+    assert len(replaced) == 2, f"expected two atomic renames, got {replaced}"
+    for src, _dst in replaced:
+        assert src.startswith(str(uploads)), f"rename source must be staged inside the destination: {src}"
+
+
+def test_nothing_is_visible_in_the_upload_dir_before_commit(client, admin_user, doctrine_dirs, monkeypatch):
+    """Staged bytes must be invisible to a scanner until the batch is committed.
+
+    The `before_commit` hook is the seam that makes this deterministic: it runs
+    after every file is staged and validated but before any rename. A concurrent
+    scan at that moment must see no `.md` file at all, only the dot-prefixed
+    staging dir, which `is_hidden_path` excludes.
+
+    Note the scope: this proves the *staging* directory is correctly hidden, not
+    that the commit is atomic. See `test_commit_renames_and_never_copies` for
+    the cross-filesystem case a result-based assertion cannot catch in `tmp_path`.
+    """
+    from app.services import uploads as uploads_service
+
+    _baked, uploads = doctrine_dirs
+    observed: list[list[str]] = []
+
+    def peek(_staging: Path) -> None:
+        # Exactly what a concurrent scan would see: iterdir + is_file + .md.
+        visible = [p for p in uploads.iterdir() if p.is_file() and p.suffix.lower() == ".md"]
+        observed.append(sorted(p.name for p in visible))
+
+    real_stage = uploads_service.stage_uploads
+
+    async def injecting_stage(entries, dest_dir, *, max_bytes, before_commit=None):
+        return await real_stage(entries, dest_dir, max_bytes=max_bytes, before_commit=before_commit or peek)
+
+    monkeypatch.setattr(uploads_service, "stage_uploads", injecting_stage)
+    monkeypatch.setattr(ingest_router, "stage_uploads", injecting_stage)
+
+    login_admin(client)
+    r = upload(client, [("Doc 615_ Atomic.md", b"z" * 4096), ("Doc 616_ Also.md", b"y" * 4096)])
+    assert r.status_code == 200
+    assert r.json()["created"] == 2
+
+    assert observed, "before_commit hook never fired"
+    assert observed[0] == [], f"a partial file was visible before commit: {observed[0]}"
+    # And afterwards both files are complete and correctly sized.
+    assert (uploads / "Doc 615_ Atomic.md").stat().st_size == 4096
+    assert (uploads / "Doc 616_ Also.md").stat().st_size == 4096
+
+
+def test_failed_commit_rolls_back_already_committed_files(
+    client, admin_user, db_session, doctrine_dirs, monkeypatch
+):
+    """A commit that fails partway must not leave the earlier files behind.
+
+    This is the failure that a temp-path-based rollback silently misses: after a
+    successful rename the staged path no longer exists, so unlinking it is a
+    no-op and the destination copy survives. Injected on the *commit*, not the
+    staging, so the rollback has real committed paths to clean up.
+    """
+    from app.services import uploads as uploads_service
+
+    _baked, uploads = doctrine_dirs
+    real_replace = uploads_service.os.replace
+    calls = {"n": 0}
+
+    def flaky(src, dst, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *a, **k)
+
+    monkeypatch.setattr(uploads_service.os, "replace", flaky)
+
+    login_admin(client)
+    # A disk-full during commit is not an expected client error, so it surfaces as
+    # a 500 in production. The TestClient re-raises it rather than returning a
+    # response; what matters for this regression is the on-disk state after.
+    with pytest.raises(OSError, match="No space left on device"):
+        upload(
+            client,
+            [
+                ("Doc 617_ First.md", b"# First\n\nA.\n"),
+                ("Doc 618_ Second.md", b"# Second\n\nB.\n"),
+                ("Doc 619_ Third.md", b"# Third\n\nC.\n"),
+            ],
+        )
+    assert calls["n"] == 2, "expected the injected failure on the second rename"
+
+    # The first file had been committed by the time the second failed. It must be
+    # gone, or the next reconcile ingests a document this response disowned.
+    leftovers = sorted(p.name for p in uploads.iterdir()) if uploads.exists() else []
+    assert leftovers == [], f"rollback left files in the upload dir: {leftovers}"
+    assert db_session.query(Document).count() == 0, "a rolled-back upload must not be ingested"
+
+
+def test_staging_dir_never_survives_a_crash(client, admin_user, db_session, doctrine_dirs, monkeypatch):
+    """A staging dir left behind by a hard kill must be inert.
+
+    Simulates the one case the `finally` cleanup cannot cover: the process dies
+    between staging and commit. Such a dir must be (a) invisible to both
+    scanners, which check the whole path rather than the basename, and (b) not
+    disturb the next upload.
+    """
+    from app.services import uploads as uploads_service
+    from app.services.doc_ingestion import scan_doctrine_files
+    from app.services.external_ingest import import_external_folder
+
+    _baked, uploads = doctrine_dirs
+    # rglob("*") descends INTO a dot-prefixed dir, so a basename-only check would
+    # ingest the file inside it. This is the regression the any-component rule fixes.
+    orphan = uploads / f"{uploads_service.STAGING_PREFIX}orphan"
+    orphan.mkdir(parents=True)
+    (orphan / "Doc 620_ Never Seen.md").write_text(
+        "# Never seen\n\nShould not be ingested.\n", encoding="utf-8"
+    )
+    (uploads / "Doc 621_ Real.md").write_text("# Real\n\nBody.\n", encoding="utf-8")
+
+    scanned = {p.name for p in scan_doctrine_files() if p.parent == uploads}
+    assert "Doc 620_ Never Seen.md" not in scanned, "doctrine scan ingested a staged file"
+    assert "Doc 621_ Real.md" in scanned
+
+    results = import_external_folder(uploads, db_session)
+    imported = {r.get("filename") for r in results if r.get("status") == "imported"}
+    assert "Doc 620_ Never Seen.md" not in imported, "external import ingested a staged file"
+
+    # A fresh upload still works with the orphan present.
+    login_admin(client)
+    r = upload(client, [("Doc 622_ After Crash.md", b"# After\n\nBody.\n")])
+    assert r.status_code == 200
+    assert (uploads / "Doc 622_ After Crash.md").is_file()
+
+
+def test_staging_dir_is_removed_from_the_upload_folder(client, admin_user, doctrine_dirs, monkeypatch):
+    """No staging dir may survive a successful request in the upload folder."""
+    from app.services import uploads as uploads_service
+
+    _baked, uploads = doctrine_dirs
+    login_admin(client)
+    r = upload(client, [("Doc 623_ Clean.md", b"# Clean\n\nBody.\n")])
+    assert r.status_code == 200
+    leftovers = [p.name for p in uploads.iterdir() if p.name.startswith(uploads_service.STAGING_PREFIX)]
+    assert leftovers == [], f"staging dir left in the upload folder: {leftovers}"
 
 
 def test_upload_strips_directory_traversal(client, admin_user, db_session, doctrine_dirs):

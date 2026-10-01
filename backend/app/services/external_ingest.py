@@ -38,6 +38,7 @@ from app.models.external import (
     TopPage,
 )
 from app.models.learning import ContentPerformanceSnapshot
+from app.services.uploads import is_hidden_path
 
 logger = logging.getLogger(__name__)
 
@@ -868,7 +869,7 @@ def import_external_folder(data_dir: Path, db, force: bool = False) -> list[dict
     if not data_dir.is_dir():
         return [{"filename": str(data_dir), "status": "error", "error": "external data path not found"}]
     for path in sorted(data_dir.rglob("*")):
-        if not path.is_file() or path.name.startswith("."):
+        if not path.is_file() or is_hidden_path(path, data_dir):
             continue
         try:
             results.append(import_external_file(db, path, force=force))

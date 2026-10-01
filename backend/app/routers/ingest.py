@@ -37,7 +37,7 @@ from app.services.external_ingest import (
     import_external_folder,
 )
 from app.services.learning_loop import snapshot_publications
-from app.services.uploads import UploadTooLarge, safe_filename, stage_uploads
+from app.services.uploads import UploadTooLarge, is_hidden_path, safe_filename, stage_uploads
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -448,7 +448,7 @@ def external_status(admin: User = Depends(require_admin), db: DBSession = Depend
     deletable: set[str] = set()
     for folder in folders:
         for filepath in sorted(folder.rglob("*")):
-            if not filepath.is_file() or filepath.name.startswith("."):
+            if not filepath.is_file() or is_hidden_path(filepath, folder):
                 continue
             try:
                 source_type, domain, brand = classify(filepath)

@@ -10,21 +10,48 @@ upload shipped 2026-10-01 (validated, uncommitted)**.
 ## Where things stand right now (2026-10-01, read this first)
 | | |
 |---|---|
-| Local `main` | `e68f9b9`, **+15 modified / 3 new files uncommitted** (the Part B wave) |
-| `origin/main` | `e68f9b9` — in sync, but the Part B wave is **local only** |
-| VPS (`157.230.2.51`) | `9df8ea5` — **3 commits + the whole Part B wave undeployed** |
-| Backend suite | **261 passed**, ruff clean, frontend image builds |
-| Dev DB | clean: 122 active docs, 0 uploads, 0 missing |
+| Local `main` | `7871532`, **+4 files uncommitted** (the atomic-upload review fix) |
+| `origin/main` | `9df8ea5` — **2 commits local only** (`ca34da8` feature, `7871532` staging) |
+| VPS (`157.230.2.51`) | `9df8ea5` — **the whole Part B wave undeployed** |
+| Backend suite | **271 passed**, ruff clean, frontend + backend images build |
+| Dev DB | clean: 122 active docs, 0 uploads, 0 missing (E2E artifacts reverted) |
 | Dev `admin` | ✅ rotated off the E2E throwaway credential 2026-10-01; new value not recorded here |
 
-**Next Move (full list below):** commit + deploy → smoke-test.
+**Next Move (full list below):** commit the atomic-upload fix → push → deploy → smoke-test.
+
+## Upload atomicity (fixed 2026-10-01, review pass)
+`stage_uploads` originally staged in the **system temp dir** and committed with `shutil.move`.
+Two real defects, both found by review of my own `7871532` and both now covered by regression tests:
+
+1. **Non-atomic commit.** `/tmp` is `st_dev=59`, the upload bind mount is `st_dev=38`, so
+   `shutil.move` silently degrades to `copy2`+unlink and the destination is observable
+   part-written. Measured live: 6 partial states on a 5.5 MB file, 53 on 40 MB. A concurrent
+   hourly `reconcile` would ingest a truncated doc. Staging now lives in a dot-prefixed
+   `dest/.staging-*/` subdir so the commit is a same-device `os.replace` rename.
+2. **Rollback cleaned the wrong path.** The `except` block unlinked the *staged* path, which
+   no longer exists after a rename, so the destination copy survived a mid-commit failure
+   (proved: `a.md` left behind on an injected ENOSPC). It now tracks and removes the
+   destinations *this call* committed.
+
+Scanners hardened to match: both `rglob("*")` walkers used a **basename**-only dot check, and
+`rglob` descends *into* dot-dirs, so a staged file inside `.staging-abc/` had an innocent
+basename and was ingested. New `is_hidden_path(path, root)` in `services/uploads.py` checks
+**every** path component; used at `routers/ingest.py:450` and `services/external_ingest.py:871`.
+The doctrine scanner uses non-recursive `iterdir()` + `is_file()` and needed no change.
+
+**Test-design note worth keeping:** the atomicity test asserts the *mechanism*
+(`shutil.move` never called, `os.replace` called from inside dest), not a "was a partial size
+observed?" result. The suite runs in `tmp_path` under `/tmp`, so a `/tmp`-staged mutant is on
+the same filesystem as its destination and its `shutil.move` is atomic anyway — a
+result-based assertion passes for that mutant and proves nothing. Verified by mutation:
+`/tmp`-staging and the basename-only dot check each fail a specific test.
 
 ## Important Details
 - Data: **`/home/roberto/RAGv2/ragseo-platform/09042026/`** (56 files, period Aug 28–Sep 3/4 2026). Contains **3 byte-identical duplicate pairs** under different names (verified by sha256); hash-dedup correctly skips them.
 - Importer runs **in-memory via Python `zipfile`** (no `unzip` binary); GSC `.csv.zip.zip` are single-level zips (test fixture built nested to prove recursion).
 - Deployment: frontend is a Docker `next-server` **prod build, no bind mount → rebuild container per UI change**. Backend + celery-worker bind-mount `./backend/app:/app/app:ro` → deploy via `up -d`. DB: pgvector Postgres via compose. Migrations auto-apply on container start via `backend/docker-entrypoint.sh` (`python scripts/migrate.py`) — no manual alembic step. Full current-state notes: "Deployed state" below + `CONTEXT-2026-09-30.md`. ⚠️ `up -d` never rebuilds — see the gotcha section.
 - Alembic chain (current head **0010**): 0001_baseline → 0002_jobs → 0003_local_embeddings → 0004_external_data → 0005_job_stage_idempotency → 0006_doc_number_unique → 0007_login_throttle → 0008_learning_loop → 0009_user_soft_delete → 0010_audit_logs. Conftest `ALL_TABLES` includes external + audit tables (sqlite fixture creates them).
-- Tests: **261 passed / 0 failed** as of 2026-10-01. **Runnable on this host, no rebuild needed:**
+- Tests: **271 passed / 0 failed** as of 2026-10-01. **Runnable on this host, no rebuild needed:**
   `docker compose exec backend python -m pytest -q` — dev compose now mounts `./backend/tests`
   and `./backend/pytest.ini` (the image can never carry them; `backend/.dockerignore` excludes
   `tests/`). Lint without a local binary:

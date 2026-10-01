@@ -92,6 +92,13 @@ curl -X POST http://localhost:8000/api/ingest/doctrine/upload \
 #     library docs are edited via scripts/sync_doctrine.sh + a redeploy, not here
 # Uploading over the number of an existing active doc supersedes it, and the response
 # names what it superseded. There is no delete/revert in the UI: superseding is one-way.
+#
+# Commit behaviour: the whole batch is streamed to a dot-prefixed staging dir INSIDE the
+# upload folder and then committed with os.replace(), so a request either lands whole or
+# not at all. Staging must stay on the destination filesystem — staging in /tmp makes the
+# move a cross-device copy whose partial states a concurrent hourly reconcile can ingest.
+# Every scanner skips dot-prefixed path components, so a staging dir orphaned by a hard
+# kill is invisible to them.
 
 # Migrations
 docker compose exec backend alembic upgrade head
