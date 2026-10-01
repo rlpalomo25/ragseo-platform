@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader } from "@/components/ui/Card";
 import { useJob, jobAction } from "@/lib/hooks/useJobs";
 import { registerPublication, usePublications } from "@/lib/hooks/useLearning";
+import { apiDownload } from "@/lib/api";
 import { jobStatusVariant, type JobDetail, type StageDetail } from "@/types/job";
 import { FLAG_LABELS, flagBadgeVariant, type Publication } from "@/types/learning";
 
@@ -46,6 +47,7 @@ function JobDetailContent() {
   const { job, isLoading, mutate } = useJob(jobId);
   const [actionError, setActionError] = useState("");
   const [acting, setActing] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const runAction = useCallback(
     async (action: "approve" | "cancel" | "retry") => {
@@ -63,6 +65,19 @@ function JobDetailContent() {
     },
     [job, mutate]
   );
+
+  const exportMarkdown = useCallback(async () => {
+    if (!job) return;
+    setExporting(true);
+    setActionError("");
+    try {
+      await apiDownload(`/api/jobs/${job.id}/export.md`, `${job.title || "draft"}.md`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Failed to export draft");
+    } finally {
+      setExporting(false);
+    }
+  }, [job]);
 
   if (isLoading || !job) {
     return (
@@ -155,6 +170,14 @@ function JobDetailContent() {
               Cancel Job
             </Button>
           )}
+        </div>
+      )}
+
+      {job.status === "approved" && (
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="secondary" loading={exporting} onClick={exportMarkdown}>
+            Export Markdown
+          </Button>
         </div>
       )}
 

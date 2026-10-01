@@ -51,3 +51,29 @@ export async function apiUpload<T>(
 
   return res.json();
 }
+
+function filenameFromHeader(res: Response): string | null {
+  const header = res.headers.get("Content-Disposition");
+  if (!header) return null;
+  const match = header.match(/filename="?([^";]+)"?/);
+  return match ? match[1] : null;
+}
+
+export async function apiDownload(path: string, fallbackName: string): Promise<void> {
+  const res = await fetch(`${API_URL}${path}`, {
+    credentials: "include",
+  });
+
+  handleUnauthorized(res);
+  if (!res.ok) throw await parseError(res);
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filenameFromHeader(res) || fallbackName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

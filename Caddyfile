@@ -28,13 +28,16 @@
         reverse_proxy backend:8000
     }
 
-    # FastAPI interactive docs + OpenAPI schema from the backend.
-    handle /docs {
-        reverse_proxy backend:8000
-    }
-    handle /docs/* {
-        reverse_proxy backend:8000
-    }
+    # NOTE: /docs and /docs/* are deliberately NOT proxied here. The frontend
+    # serves /docs as the Doctrine Reference section (Sidebar -> /docs), and
+    # Caddy `handle` blocks are mutually exclusive with first-match-wins, so
+    # routing /docs to the backend used to shadow those pages entirely.
+    # FastAPI's interactive docs moved to /api/meta/docs (redoc -> /api/meta/redoc),
+    # which the /api/* block above already forwards.
+
+    # FastAPI OpenAPI schema. Left at the root: nothing in the frontend uses
+    # /openapi.json, both UIs reference it by absolute path, and the deploy
+    # smoke check curls it.
     handle /redoc {
         reverse_proxy backend:8000
     }

@@ -46,6 +46,20 @@ curl -s http://157.230.2.51/openapi.json | grep -oE '"/api/ingest/external/(uplo
 curl -s -o /dev/null -w "%{http_code}\n" -L http://157.230.2.51/exports          # 200
 # routes protected as writer-only?
 curl -s -o /dev/null -w "%{http_code}\n" -X DELETE http://157.230.2.51/api/ingest/external/delete   # 401
+# /docs must reach the frontend (Doctrine Reference), NOT FastAPI's Swagger UI.
+# Caddy `handle` blocks are first-match-wins, so a /docs route pointing at the
+# backend silently shadows the whole Doctrine section.
+curl -s -o /dev/null -w "%{http_code}\n" http://157.230.2.51/docs                  # 200
+curl -s http://157.230.2.51/docs | grep -q "swagger-ui" && echo "REGRESSION: /docs is Swagger, not Doctrine"
+curl -s -o /dev/null -w "%{http_code}\n" http://157.230.2.51/api/meta/docs        # 200 (Swagger moved here)
+```
+
+`docker compose -f docker-compose.prod.yml up -d` restarts Caddy only if its
+config changed. Caddy refuses to start on a malformed config, so a bad edit
+takes the site down entirely — validate first:
+
+```bash
+docker compose -f docker-compose.prod.yml exec caddy caddy validate --config /etc/caddy/Caddyfile
 ```
 
 <details>

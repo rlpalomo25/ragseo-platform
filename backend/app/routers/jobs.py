@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session as DBSession
 
@@ -9,6 +9,12 @@ from app.dependencies import require_writer
 from app.models.agent_task import AgentTask
 from app.models.job import AgentJob, JobStage
 from app.models.user import User
+from app.services.audit import log_audit
+from app.services.markdown_export import (
+    build_filename,
+    build_markdown,
+    select_writer_output,
+)
 from app.services.orchestrator import approve_job, cancel_job, create_job, retry_job
 
 router = APIRouter()
@@ -169,6 +175,45 @@ def retry_existing_job(
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return _summary(job)
+
+
+@router.get("/{job_id}/export.md")
+def export_job_markdown(
+    job_id: UUID,
+    user: User = Depends(require_writer),
+    db: DBSession = Depends(get_db),
+):
+    """Download the approved draft as Markdown with YAML front matter."""
+    job = db.query(AgentJob).filter(AgentJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Only approved jobs can be exported",
+        )
+
+    output = select_writer_output(db, job)
+    if not output:
+        raise HTTPException(status_code=404, detail="No completed draft to export")
+
+    filename = build_filename(output, job)
+    # log_audit commits the surrounding transaction. This route is read-only, so
+    # that is harmless here, but the audit row is intentionally written last so
+    # rejected exports leave no audit trail.
+    log_audit(
+        db,
+        user=user,
+        action="job.export",
+        route=f"/api/jobs/{job_id}/export.md",
+        detail=f"job={job.id} file={filename}",
+    )
+
+    return Response(
+        content=build_markdown(output),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/{job_id}/cancel", response_model=JobSummary)
