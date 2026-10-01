@@ -131,13 +131,101 @@ Scope decisions: **vector/HNSW SKIPPED** (keep `vector(768)` + `ix_doc_chunks_em
 - **Post-review fixes applied before commit**: (1) `routers/users.py` `delete_user` had lost its explicit `db.commit()` and persisted only as a side effect of `log_audit`'s internal commit — restored an explicit `db.commit()` *after* the `log_audit` call, mirroring `restore_user` in the same file; this keeps the action + audit row atomic while removing the hidden coupling (had it been placed *before* `log_audit`, a crash in between would delete a user with no audit entry). (2) `useTheme.ts` read localStorage in a `useEffect` that ran *after* the write-effect's first pass, clobbering a stored `"dark"` back to `"light"` and flashing dark-mode users; replaced with a lazy `useState` initializer behind a `typeof window === "undefined"` guard.
 - **Frontend verified via `docker build ./frontend`** — no Node/npm on this host, so `tsc --noEmit`/`npm run lint` still cannot run directly here (standing caveat below), but `next build` (which fails on TS errors) completed, so the frontend type-checks inside the image.
 
+## HANDOFF — outstanding fixes (verified 2026-10-01)
+Read this first when resuming, especially **on a different machine**. Every line
+reference below was re-read in the code on 2026-10-01, not copied from memory.
+
+> ⚠️ **`CONTEXT-*.md` is gitignored** (`.gitignore:29` — session notes carry live prod
+> passwords), so the `CONTEXT-*` files do **not** exist on a fresh clone. This section
+> is the tracked, portable copy of the outstanding-work list. The last session's
+> narrative (`CONTEXT-2026-10-01.md`) is local-only; everything needed to keep going
+> is here or below.
+
+### First steps on a new machine
+- `git clone` needs GitHub access. The dev box used a manually-installed `gh` 2.102.0
+  (`~/.local/opt/gh` symlinked into `~/.local/bin`) — **not** a pacman package, because
+  pacman needed a sudo password; upgrading means re-downloading the tarball.
+- **`/tmp/opencode` is empty** and was wiped: the `ragseo-deps` PYTHONPATH venv and
+  `ruff/bin/ruff` are gone, and backend deps are not installed system-wide. The prod
+  `.env` reference copy at `/tmp/opencode/server.env` is **also gone** — get real values
+  from the VPS `.env`.
+- **No Node/npm on the dev host.** The working gates are Docker builds, not local tooling:
+  frontend → `docker build ./frontend` (full lint **and** type gate); backend → rebuild
+  the image, then `docker compose exec backend python -m pytest -m "not integration"`.
+
+### 1. Live prod bugs — one deploy closes both (already fixed in tree, just undeployed)
+1. **`celery-worker` split-brain** — prod's worker runs the pre-TSR image (old
+   `orchestrator.py`, no `retry_job()`, no GATE-2 guard) while the API serves
+   `POST /api/jobs/{id}/retry`. **HTTP smoke tests cannot detect it** (they only hit the
+   API container). Fixed by `af08d60` (both services now `image: ragseo-backend:local`).
+2. **`/docs` serves Swagger, not Doctrine** — Caddy `handle` is first-match-wins, so
+   `handle /docs` + `handle /docs/*` silently replaced the frontend's Doctrine Reference
+   section. Fixed by `0fa1b6b` (Swagger → `/api/meta/docs`, Caddy handlers deleted).
+   Smoke after deploy: `/docs` body must **not** contain `swagger-ui`; a 200 is **not**
+   sufficient, a regression still serves 200.
+
+### 2. Real code defects still in `main`
+- 🔴 **`reconcile_doctrine` would mark every upload `missing`** — the blocker for all
+  doctrine-upload work. `doc_ingestion.py:287` globs **only** `settings.doctrine_path`,
+  but the sweep at `:367-376` marks every `active` doc whose filename isn't in that scan,
+  and it runs **hourly** (`celery_app.py:39-42`, `crontab(minute=0)`). Fix: a
+  `doctrine_folders()` + `scan_doctrine_files()` union (model on `_external_folders`,
+  `routers/ingest.py:44-55`) used by **both** `ingest_all_docs` (`:129`) and
+  `reconcile_doctrine` (`:287`).
+- 🔴 **Prod `celery-worker` has no `volumes:` block** — `docker-compose.prod.yml:117`,
+  confirmed: no `volumes:` key anywhere in the block (the backend's is at `:93`). 2's
+  first item is not actually fixed until this exists, since the worker runs the hourly
+  reconcile and must see the same writable dir the API writes to. Prod `doctrine_path`
+  is the image layer (`backend/Dockerfile:15`, no volume) = ephemeral; dev is `:ro`.
+  Needs `doctrine_upload_path` in `config.py` (beside `:28-30`) plus a
+  `./doctrine_uploads:/app/uploads/doctrine` mount in **four** places: dev backend +
+  dev worker (`docker-compose.yml:88,121`) and prod backend + **prod celery-worker**.
+- 🟡 **`extract_doc_number` mangles non-conforming names** — `doc_ingestion.py:29-33`
+  falls back to `filename.split("_")[0].split(".")[0]`, and `extract_series` (`:36-41`)
+  returns `"misc"` for anything not starting with a digit. Verified: `Doc 100_Something.md`
+  → `100`/`100` ✅ and `Doc 316:Something.md` → `316`/`300` ✅, but
+  `Doc 100 - Something.md` → `"Doc 100 - Something"`/`misc` ❌ and `random.md` →
+  `"random"`/`misc` ❌. The fallback splits only on `_` and `.`, and that garbage is
+  **permanent** under `uq_documents_doc_number_active`, so a later legitimate `Doc 100 …`
+  can never take that number. Gate the upload path on `DOC_PATTERN` (`:18`), `.md`,
+  `len(filename) <= 255` (`Document.filename` is `String(255)`), ~10 MB cap, and 409 on
+  a name already in the baked `doctrine_path` (same reasoning as the baked-name refusal
+  at `routers/ingest.py:434-458`).
+- 🟡 **`log_audit` commits the surrounding transaction** (`services/audit.py:6-15`) —
+  harmless on read-only routes but not side-effect free, and it already caused one real
+  bug: `delete_user` lost its explicit `db.commit()` and persisted only as a side effect
+  of `log_audit`. It was restored **after** the `log_audit` call on purpose — placing it
+  before would let a crash in between delete a user with no audit row.
+
+### 3. Unverified work
+**`backend/tests/test_jobs_export.py` (364 lines, `0fa1b6b`) has never been run.** Dev
+bind-mounts only `./backend/app` (`docker-compose.yml:96`), **not `tests/`**, and
+`/tmp/opencode` was wiped. `pytest==8.3.3` *is* in the image (`requirements.txt:17`), so
+rebuild the image and run the suite. The same rebuild should clear the **2 known
+`test_external_ingest` failures** (stale image still carrying the 56 pre-purge baked
+files). Last green run: **204 passed / 2 failed**. `ruff check` also can't run locally
+(the binary was in `/tmp/opencode`) — re-fetch 0.16.8 to match `backend/pyproject.toml`.
+
+### 4. Debt, not defects
+- **10 pages duplicate the shell** (`AuthGuard` + `Sidebar` + `Header`) —
+  `app/{page,jobs/page,jobs/[jobId]/page,exports,agents,ingest,docs/page,docs/[docId],admin/users,learning}/page.tsx`.
+- **`lib/api.ts` has three request shapes** — `apiFetch`, `apiUpload`, `apiDownload`.
+- **Status-variant maps** duplicated across components.
+- Optional: dedicated Doc 307 SERP agent → add to `AGENT_FUNCTIONS`, `tasks.py:16-20`
+  (currently router/writer/auditor only).
+
 ## Next Move
-0. **⛔ DEPLOY `dff3578` TO THE VPS — still outstanding, do this first.**
-   `af08d60` + `dff3578` are pushed but prod is still on `9df8ea5`. The
-   `celery-worker` split-brain is **still live**: it runs the pre-TSR image
-   (old `orchestrator.py` — no `retry_job()`, no GATE-2 guard) while the API
-   serves `POST /api/jobs/{id}/retry`. HTTP smoke tests cannot detect this
-   because they only exercise the API container.
+
+0. **⛔ DEPLOY `0fa1b6b` TO THE VPS — still outstanding, do this first.**
+   Three commits are pushed but prod is still on `9df8ea5`, so **two live prod
+   bugs are unfixed**:
+   - the **`celery-worker` split-brain** — it runs the pre-TSR image (old
+     `orchestrator.py` — no `retry_job()`, no GATE-2 guard) while the API serves
+     `POST /api/jobs/{id}/retry`. HTTP smoke tests cannot detect this because
+     they only exercise the API container.
+   - **`/docs` serves Swagger, not Doctrine** — Caddy shadows the frontend's
+     Doctrine Reference section. This also blocks the doctrine-upload UI, which
+     is planned for `/docs`.
    ```bash
    cd /opt/ragseo-platform
    git pull origin main
@@ -148,22 +236,28 @@ Scope decisions: **vector/HNSW SKIPPED** (keep `vector(768)` + `ix_doc_chunks_em
    docker compose -f docker-compose.prod.yml exec db psql -U ragseo -d ragseo \
      -c "SELECT version_num FROM alembic_version;"      # expect 0010_audit_logs
    ```
-   Then smoke-test the new landing page: log in → must land on `/` (Dashboard),
-   and Back must not return to `/login`.
-1. ~~**Commit the working tree**~~ ✅ done — `af08d60` + `dff3578` pushed, tree clean.
-2. **Doctrine upload (Part B) — designed, not started.** Full plan in
+   Then smoke-test: log in → must land on `/` (Dashboard) and Back must not
+   return to `/login`; `/docs` must render Doctrine (body must **not** contain
+   `swagger-ui`) and `/api/meta/docs` must be the Swagger UI.
+1. ~~**Commit the working tree**~~ ✅ done — `0fa1b6b` pushed, tree clean.
+2. **Run the backend suite.** `tests/test_jobs_export.py` (364 lines) is
+   committed but its run is **unverified** — see the "Backend tests" note below.
+3. **Doctrine upload (Part B) — designed, not started.** Full plan in
    "Doctrine upload — planned, NOT started" above. Two things to settle first:
    the `reconcile_doctrine` blocker and the missing prod `celery-worker` volume.
 
-## Deployed state — ⚠️ prod is STILL on `9df8ea5`; two commits are deployed-nowhere
+## Deployed state — ⚠️ prod is STILL on `9df8ea5`; three commits are deployed-nowwhere
+- 📄 **The "HANDOFF — outstanding fixes" section above is the canonical work list**
+  (verified 2026-10-01, portable across machines — `CONTEXT-*.md` is gitignored).
 - **VPS (`157.230.2.51`) still runs `9df8ea5`.** Nothing has been redeployed since
   the earlier 2026-09-30 session (smoke tests were 200 at that point).
-  Session: `CONTEXT-2026-09-30.md`.
-- **Local == `origin/main` == `dff3578` — in sync, pushed.** So these are in the
+  Sessions: `CONTEXT-2026-09-30.md`, `CONTEXT-2026-10-01.md`.
+- **Local == `origin/main` == `0fa1b6b` — in sync, pushed.** So these are in the
   tree and on GitHub but **not** on prod:
   - `af08d60` shared image tag (`docker-compose.prod.yml`)
   - `dff3578` post-login landing at `/` (frontend only)
-- The `celery-worker` stale-image caveat below is therefore **still live**.
+  - `0fa1b6b` Markdown export + the `/docs` unblock (Caddyfile + FastAPI doc URLs)
+- Both prod bugs named in **Next Move 0** are therefore **still live**.
 - ~~All previously-undelivered work shipped.~~ Superseded by the above.
 - **`2738159`** best-practice cleanup — *deployed* (was "NOT deployed" in the
   2026-09-19 notes below; that status is superseded).
@@ -251,7 +345,53 @@ command no longer works. `pytest==8.3.3` *is* in the image (`requirements.txt:17
 bind-mounts only `./backend/app` (`docker-compose.yml:96`) — **not `tests/`** — so tests need
 an image rebuild before `docker compose exec backend python -m pytest -m "not integration"`.
 The 2 known `test_external_ingest` failures (stale local image carrying the pre-purge 56
-baked files) are still unverified.
+baked files) are still unverified. **Consequence:** `tests/test_jobs_export.py` (364 lines,
+`0fa1b6b`) is committed but **its run is unverified** — rebuild the image, then run the
+suite and clear both items at once.
+
+## Markdown export + `/docs` unblock — `0fa1b6b` (2026-09-30 night, PUSHED, not deployed)
+### `GET /api/jobs/{id}/export.md` — the approved draft as a Markdown file
+`services/markdown_export.py` (new, 104 lines) + route at `routers/jobs.py:181`.
+- Renders the approved writer draft with YAML front matter (`title`, `meta_title`,
+  `meta_description`, `brand`, `content_type`, `archetype`) and the body **verbatim**.
+  The body already lives in the writer task's `output_data["output"]["content_markdown"]`,
+  so this is read + format — **no model call, nothing regenerated**.
+- **Values quoted with `json.dumps`**, which is a valid YAML double-quoted scalar →
+  colons, quotes, `#`, newlines and leading dashes need no hand-rolled escaping.
+  Optional fields are omitted when empty rather than emitted blank.
+- 409 unless `job.status == "approved"`; 404 if no job or no completed draft.
+- **Audited as `job.export`**, written *last* so rejected exports leave no row.
+  `log_audit` commits the surrounding transaction — harmless here, but not side-effect free.
+- **Draft selection** (`select_writer_output`): newest writer stage that *has* content, not
+  the newest writer stage outright — revision loops create several and `retry_job` keeps
+  earlier ones as `skipped`, so `max(sequence)` can land on an empty output. The scan also
+  drops failed tasks (`run_agent` only writes `output_data` on success). Explicit
+  `join(JobStage)` because the models declare no ORM `relationship()`.
+- Filename: `_slug(title)` → `_slug(job.title)` → `job.id`, stem ≤ 80 chars, as a
+  **chain not a nest** so an all-punctuation title can't swallow the job id.
+- Frontend: `apiDownload()` in `lib/api.ts` (blob + object URL, `Content-Disposition`
+  name with a JS fallback) + **Export .md** on `jobs/[jobId]/page.tsx`, approved jobs only.
+- `expose_headers=["Content-Disposition"]` on CORS is **required**, not cosmetic: dev is
+  `:3000` → `:8000` and the browser hides the header cross-origin without it.
+
+### 🔴 The `/docs` fix — Caddy was shadowing the whole Doctrine Reference section
+**Caddy `handle` blocks are mutually exclusive and first-match-wins.** The Caddyfile had
+`handle /docs` + `handle /docs/*` → backend for Swagger, which **silently replaced the
+frontend's `/docs`** (`Sidebar -> /docs`) in prod. Not cosmetic: the doctrine-upload UI is
+planned for `/docs`, so this had to be cleared first.
+- `main.py`: `docs_url="/api/meta/docs"`, `redoc_url="/api/meta/redoc"` — no Caddy change
+  needed, the existing `/api/*` block already forwards it.
+- Caddyfile: the two `/docs` handlers **deleted**, with a comment recording why.
+- **`/openapi.json` stays at the root on purpose** — both UIs reference it by absolute
+  path and the deploy smoke check curls it; moving it breaks all three.
+- **General rule this exposes: only `/api/*` belongs to the backend.** Any `handle` pointing
+  a frontend-owned path at FastAPI replaces that page, with no error the user can diagnose.
+- **A malformed Caddyfile takes the whole site down**, and `up -d` only restarts Caddy when
+  the config actually changed. Validate first:
+  `docker compose -f docker-compose.prod.yml exec caddy caddy validate --config /etc/caddy/Caddyfile`
+- The 200 in the deploy smoke check is **not** enough for this route — a regression still
+  serves a 200 (Swagger). `prompts/03-push-redeploy.md` now greps the `/docs` body for
+  `swagger-ui` and fails loudly.
 
 ## Doctrine upload — planned, NOT started
 Goal: a logged-in user can upload new doctrine `.md` files through the web UI. Mirrors the
@@ -259,6 +399,10 @@ proven `POST /api/ingest/external/upload` pattern (`routers/ingest.py:358-410`).
 written yet; decisions taken with the user: **`require_writer`** (admin+writer, so the UI
 goes on `/docs` — `/ingest` is admin-gated at `app/ingest/page.tsx:31`), **keep auto-supersede
 but return which active doc was superseded**, and **inline but scoped** to the uploaded files.
+- **`/docs` now resolves to the frontend in the tree** (`0fa1b6b` removed the Caddy
+  shadowing) — so the target page for this feature is reachable. **But prod still serves
+  Swagger there** until that commit is deployed, so this work must not ship before the
+  deploy in Next Move 0 or the feature lands on a 404-ish page.
 - **🔴 BLOCKER — `reconcile_doctrine` would mark every upload `missing`.** It globs **only**
   `settings.doctrine_path` (`services/doc_ingestion.py:287`) yet sweeps every active doc whose
   filename isn't in that scan to `status="missing"` (`:370-376`), and it runs **hourly on the
@@ -298,7 +442,8 @@ but return which active doc was superseded**, and **inline but scoped** to the u
   the dev host, so `npx tsc --noEmit`/`npm run lint` still need a Node machine for fast
   iteration, but nothing needs pushing unverified. Flagged refactors (all still open):
   shared dashboard layout (8 × duplicated AuthGuard+Sidebar+Header shell), status-variant
-  maps, api.ts EXTRA DRY.
+  maps, api.ts EXTRA DRY — the last one now has a third shape to fold in, since
+  `apiDownload` (`0fa1b6b`) sits alongside `apiFetch`/`apiUpload` in `lib/api.ts`.
 - **Rename ripple**: tests patch `tasks.session_scope` (was `tasks.SessionLocal`);
   `tests/test_external_data.py` imports `latest_export_ids`. Don't regress either.
 
@@ -337,3 +482,4 @@ but return which active doc was superseded**, and **inline but scoped** to the u
 - Config/mount: `backend/app/config.py` (`external_data_path`, `external_upload_path`), `frontend/../docker-compose.yml` (backend+worker `./09042026:/app/external:ro` + `./external_uploads:/app/uploads/external`)
 - Tests: `backend/tests/test_external_ingest.py` (19 tests incl. upload + delete API), `backend/tests/conftest.py` (ALL_TABLES + imports)
 - Frontend: `frontend/src/app/ingest/page.tsx` (ExternalDataCard), `frontend/src/types/ingest.ts`, `frontend/src/lib/hooks/useIngest.ts`
+- Draft export: `backend/app/services/markdown_export.py` (`select_writer_output`, `build_markdown`, `build_filename`) · route `GET /api/jobs/{id}/export.md` in `backend/app/routers/jobs.py` (writer-gated, 409 unless `approved`, audits `job.export`) · tests `backend/tests/test_jobs_export.py` · UI `frontend/src/app/jobs/[jobId]/page.tsx` + `apiDownload` in `frontend/src/lib/api.ts` · FastAPI doc URLs `/api/meta/docs` + `/api/meta/redoc` in `backend/app/main.py` (`/openapi.json` stays at root)
