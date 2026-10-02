@@ -17,7 +17,9 @@
 #   ./restore_doctrine.sh --apply         # write into ./doctrine (needs 100%)
 set -euo pipefail
 
-cd "$(dirname "$0")"
+# Repo root, not scripts/: the compose file and the doctrine/ target both live
+# at the top level, so a relative path from scripts/ resolves to nothing.
+cd "$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE="docker compose -f docker-compose.prod.yml"
 OUT=/tmp/doctrine-restore
 APPLY=0
