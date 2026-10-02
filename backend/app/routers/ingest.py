@@ -1,6 +1,7 @@
 """Admin ingest control panel: preview doctrine folder vs DB, then reingest."""
 
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -489,6 +490,39 @@ class ExternalDeleteResultResponse(BaseModel):
     files: list[ExternalDeleteItem]
 
 
+class DoctrineDeleteRequest(BaseModel):
+    filenames: list[str]
+
+
+class DoctrineDeleteItem(BaseModel):
+    filename: str
+    doc_number: str | None = None
+    status: str  # "deleted" | "library" | "not_found" | "error"
+    message: str | None = None
+    undoable: bool = False
+
+
+class DoctrineDeleteResultResponse(BaseModel):
+    message: str
+    deleted: int = 0
+    library: int = 0
+    not_found: int = 0
+    errors: int = 0
+    files: list[DoctrineDeleteItem]
+
+
+class DoctrineRestoreRequest(BaseModel):
+    filenames: list[str]
+
+
+class DoctrineRestoreResultResponse(BaseModel):
+    message: str
+    restored: int = 0
+    not_found: int = 0
+    errors: int = 0
+    files: list[DoctrineDeleteItem]
+
+
 @router.get("/ingest/external/status", response_model=ExternalStatusResponse)
 def external_status(admin: User = Depends(require_admin), db: DBSession = Depends(get_db)):
     folders = _external_folders()
@@ -745,4 +779,199 @@ def delete_external(
         resp.files.append(ExternalDeleteItem(filename=name, status="deleted"))
 
     resp.message = f"Deleted {resp.deleted} file(s)"
+    return resp
+
+
+# ------------------------------------------------------- doctrine delete/undo
+#
+# Delete is a *soft* delete: the Document row and its content stay, only the
+# status and the file change. That is what makes undo possible without a data
+# model for document versions, and it is nearly free because the reconcile
+# sweep already skips any row whose status is not "active"
+# (doc_ingestion.reconcile_doctrine). A deleted document is therefore invisible
+# to the scan and will not be resurrected or marked missing on the next run.
+#
+# The read-only library under doctrine_path is never deletable from the website.
+# That is enforced twice on purpose: by the name check here, and by the
+# filesystem, since /app/doctrine is mounted :ro and unlinking it would fail.
+
+
+def _doctrine_library_names() -> set[str]:
+    library = Path(settings.doctrine_path)
+    if not library.is_dir():
+        return set()
+    return {p.name for p in library.iterdir() if p.is_file()}
+
+
+@router.delete("/ingest/doctrine/delete", response_model=DoctrineDeleteResultResponse)
+def delete_doctrine(
+    payload: DoctrineDeleteRequest,
+    user: User = Depends(require_writer),
+    db: DBSession = Depends(get_db),
+):
+    """Remove uploaded doctrine documents, reversibly (writer or admin).
+
+    Unlinks the file from the writable upload folder and marks the row
+    ``deleted``. Library documents are refused. The row is kept so the operation
+    can be undone by ``POST /api/ingest/doctrine/restore``, which rewrites the
+    file from the content column and re-ingests it.
+    """
+    upload_dir = Path(settings.doctrine_upload_path)
+    library_names = _doctrine_library_names()
+    resp = DoctrineDeleteResultResponse(message="Delete selected doctrine documents", files=[])
+
+    for raw in payload.filenames:
+        name = safe_filename(raw)
+        if not name:
+            resp.not_found += 1
+            resp.files.append(DoctrineDeleteItem(filename="", status="not_found", message="Invalid filename"))
+            continue
+
+        if name in library_names:
+            resp.library += 1
+            resp.files.append(
+                DoctrineDeleteItem(
+                    filename=name,
+                    status="library",
+                    message=(
+                        "Part of the read-only doctrine library and cannot be deleted from the website."
+                    ),
+                )
+            )
+            continue
+
+        doc = db.query(Document).filter(Document.filename == name).first()
+        if doc is None:
+            resp.not_found += 1
+            resp.files.append(DoctrineDeleteItem(filename=name, status="not_found"))
+            continue
+
+        if doc.status == "deleted":
+            resp.not_found += 1
+            resp.files.append(
+                DoctrineDeleteItem(
+                    filename=name,
+                    doc_number=doc.doc_number,
+                    status="not_found",
+                    message="Already deleted.",
+                )
+            )
+            continue
+
+        try:
+            # The file may legitimately be absent (an earlier ops-side removal);
+            # the row is still deletable, and undo can rewrite it from content.
+            (upload_dir / name).unlink(missing_ok=True)
+            doc.status = "deleted"
+            # Clear the stored hash. The record "these exact bytes are already
+            # ingested" stops being true once the file is gone, and _ingest_one
+            # skips any file whose hash still matches (doc_ingestion line ~243).
+            # Leaving it set would make restore a no-op: the rewritten file would
+            # hash-match and be skipped, leaving the document active but with no
+            # chunks, so agents could never retrieve it again.
+            doc.file_hash = None
+            # Chunks belong to the now-deleted version. Dropped so an agent job
+            # cannot retrieve a document the operator just removed; restore
+            # re-ingests and rebuilds them.
+            db.query(DocChunk).filter(DocChunk.document_id == doc.id).delete(synchronize_session="fetch")
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning("Failed to delete doctrine '%s': %s", name, e)
+            resp.errors += 1
+            resp.files.append(
+                DoctrineDeleteItem(filename=name, doc_number=doc.doc_number, status="error", message=str(e))
+            )
+            continue
+
+        logger.info("User '%s' deleted doctrine '%s' (doc %s)", user.username, name, doc.doc_number)
+        log_audit(
+            db,
+            user=user,
+            action="doctrine.delete",
+            route="/api/ingest/doctrine/delete",
+            detail=f"{name} (doc {doc.doc_number})",
+            status_code=200,
+            commit=True,
+        )
+        resp.deleted += 1
+        resp.files.append(
+            DoctrineDeleteItem(filename=name, doc_number=doc.doc_number, status="deleted", undoable=True)
+        )
+
+    resp.message = f"Deleted {resp.deleted} document(s)"
+    return resp
+
+
+@router.post("/ingest/doctrine/restore", response_model=DoctrineRestoreResultResponse)
+def restore_doctrine(
+    payload: DoctrineRestoreRequest,
+    user: User = Depends(require_writer),
+    db: DBSession = Depends(get_db),
+):
+    """Undo a soft delete: rewrite the file from ``documents.content`` and re-ingest.
+
+    Works because the delete kept the content column, so the document does not
+    have to still be on disk to come back. The row is reactivated and the file is
+    re-ingested inline so agents can see it on their very next job.
+    """
+    upload_dir = Path(settings.doctrine_upload_path)
+    resp = DoctrineRestoreResultResponse(message="Restore deleted doctrine documents", files=[])
+
+    for raw in payload.filenames:
+        name = safe_filename(raw)
+        if not name:
+            resp.not_found += 1
+            resp.files.append(DoctrineDeleteItem(filename="", status="not_found", message="Invalid filename"))
+            continue
+
+        doc = db.query(Document).filter(Document.filename == name).first()
+        if doc is None or doc.status != "deleted":
+            resp.not_found += 1
+            resp.files.append(
+                DoctrineDeleteItem(
+                    filename=name,
+                    doc_number=doc.doc_number if doc else None,
+                    status="not_found",
+                    message="No deleted document with that filename.",
+                )
+            )
+            continue
+
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            path = upload_dir / name
+            path.write_text(doc.content, encoding="utf-8")
+            doc.status = "active"
+            doc.last_updated = datetime.now(UTC)
+            db.commit()
+            # Re-ingest so chunks and cross-references are rebuilt. A failure here
+            # leaves the document active and retrievable in the UI, just not yet
+            # embedded, which the hourly reconcile will finish.
+            ingest_files(db, [path])
+        except Exception as e:
+            db.rollback()
+            logger.warning("Failed to restore doctrine '%s': %s", name, e)
+            resp.errors += 1
+            resp.files.append(
+                DoctrineDeleteItem(filename=name, doc_number=doc.doc_number, status="error", message=str(e))
+            )
+            continue
+
+        logger.info("User '%s' restored doctrine '%s' (doc %s)", user.username, name, doc.doc_number)
+        log_audit(
+            db,
+            user=user,
+            action="doctrine.restore",
+            route="/api/ingest/doctrine/restore",
+            detail=f"{name} (doc {doc.doc_number})",
+            status_code=200,
+            commit=True,
+        )
+        resp.restored += 1
+        resp.files.append(
+            DoctrineDeleteItem(filename=name, doc_number=doc.doc_number, status="deleted", undoable=False)
+        )
+
+    resp.message = f"Restored {resp.restored} document(s)"
     return resp

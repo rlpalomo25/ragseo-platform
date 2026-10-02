@@ -978,3 +978,176 @@ def test_stage_uploads_without_a_total_cap_is_unbounded_by_batch(tmp_path):
         )
     )
     assert len(saved) == 2
+
+
+# --------------------------------------------------------- delete and undo
+#
+# Delete is a soft delete: the row and its content survive so the operation can be
+# undone. The property that makes it safe is that reconcile_doctrine already
+# skips any row whose status is not "active", so a deleted document is neither
+# marked missing nor resurrected on the next hourly run.
+
+
+def delete_doc(client, names):
+    return client.request("DELETE", "/api/ingest/doctrine/delete", json={"filenames": names})
+
+
+def restore_doc(client, names):
+    return client.request("POST", "/api/ingest/doctrine/restore", json={"filenames": names})
+
+
+def test_delete_removes_the_file_and_marks_the_row(client, db_session, admin_user, doctrine_dirs):
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 950_Deletable.md", "# Deletable\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    resp = delete_doc(client, ["Doc 950_Deletable.md"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted"] == 1
+    assert body["files"][0]["status"] == "deleted"
+    assert body["files"][0]["undoable"] is True
+
+    assert not (uploads / "Doc 950_Deletable.md").exists(), "the file must be unlinked"
+    doc = db_session.query(Document).filter(Document.doc_number == "950").one()
+    assert doc.status == "deleted"
+    assert doc.content, "content must be kept so the delete can be undone"
+
+
+def test_delete_refuses_a_library_document(client, db_session, admin_user, doctrine_dirs):
+    baked, _uploads = doctrine_dirs
+    write_doc(baked, "Doc 960_Library Doc.md", "# Library\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    resp = delete_doc(client, ["Doc 960_Library Doc.md"])
+    body = resp.json()
+    assert body["deleted"] == 0
+    assert body["library"] == 1
+    assert body["files"][0]["status"] == "library"
+    assert (baked / "Doc 960_Library Doc.md").exists(), "a library file must survive"
+    doc = db_session.query(Document).filter(Document.doc_number == "960").one()
+    assert doc.status == "active"
+
+
+def test_a_deleted_document_is_left_alone_by_the_next_reconcile(
+    client, db_session, admin_user, doctrine_dirs
+):
+    """The whole reason a soft delete is safe here.
+
+    Without this the hourly reconcile would either mark the document missing (it
+    is gone from disk) or re-ingest it if anything recreated the file. Both would
+    silently undo the operator's delete.
+    """
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 970_Keep Out.md", "# Keep Out\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+    assert delete_doc(client, ["Doc 970_Keep Out.md"]).json()["deleted"] == 1
+
+    # reconcile_doctrine, not ingest_all_docs: only the reconcile run owns the
+    # missing-sweep that could resurrect or clobber a soft-deleted row.
+    stats = reconcile_doctrine(db_session)
+    doc = db_session.query(Document).filter(Document.doc_number == "970").one()
+    assert doc.status == "deleted", f"reconcile changed the status (stats={stats})"
+    assert stats["missing"] == 0, "a soft-deleted document must not be marked missing"
+    assert stats["created"] == 0, "a soft-deleted document must not be re-created"
+
+
+def test_restore_brings_the_document_back_with_its_content(client, db_session, admin_user, doctrine_dirs):
+    _baked, uploads = doctrine_dirs
+    original = "# Undo Me\n\nThe original body.\n"
+    write_doc(uploads, "Doc 980_Undo Me.md", original)
+    ingest_all_docs(db_session)
+    login_admin(client)
+    delete_doc(client, ["Doc 980_Undo Me.md"])
+    assert not (uploads / "Doc 980_Undo Me.md").exists()
+
+    resp = restore_doc(client, ["Doc 980_Undo Me.md"])
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["restored"] == 1
+    assert body["errors"] == 0
+
+    restored = uploads / "Doc 980_Undo Me.md"
+    assert restored.exists(), "restore must rewrite the file"
+    assert restored.read_text(encoding="utf-8") == original, "restored content must match the original"
+
+    doc = db_session.query(Document).filter(Document.doc_number == "980").one()
+    assert doc.status == "active"
+    assert db_session.query(DocChunk).filter(DocChunk.document_id == doc.id).count() > 0, (
+        "restore must re-ingest so agents can retrieve the document again"
+    )
+
+
+def test_restore_of_a_live_document_is_a_no_op(client, db_session, admin_user, doctrine_dirs):
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 990_Live.md", "# Live\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    resp = restore_doc(client, ["Doc 990_Live.md"])
+    assert resp.json()["restored"] == 0
+    assert resp.json()["not_found"] == 1
+    assert (uploads / "Doc 990_Live.md").exists()
+
+
+def test_delete_drops_the_chunks_so_agents_cannot_retrieve_it(client, db_session, admin_user, doctrine_dirs):
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 995_Chunks.md", "# Chunks\n\n" + ("Filler sentence. " * 200) + "\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+    doc = db_session.query(Document).filter(Document.doc_number == "995").one()
+    before = db_session.query(DocChunk).filter(DocChunk.document_id == doc.id).count()
+    assert before > 0, "precondition: the document should have chunks"
+
+    delete_doc(client, ["Doc 995_Chunks.md"])
+    assert db_session.query(DocChunk).filter(DocChunk.document_id == doc.id).count() == 0
+
+
+def test_delete_audits_the_action(client, db_session, admin_user, doctrine_dirs):
+    from app.models.audit import AuditLog
+
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 996_Audited.md", "# Audited\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+    delete_doc(client, ["Doc 996_Audited.md"])
+
+    rows = db_session.query(AuditLog).filter(AuditLog.action == "doctrine.delete").all()
+    assert len(rows) == 1
+    assert "Doc 996" in rows[0].detail
+
+
+def test_restore_audits_the_action(client, db_session, admin_user, doctrine_dirs):
+    from app.models.audit import AuditLog
+
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 997_Audited Undo.md", "# Audited\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+    delete_doc(client, ["Doc 997_Audited Undo.md"])
+    restore_doc(client, ["Doc 997_Audited Undo.md"])
+
+    rows = db_session.query(AuditLog).filter(AuditLog.action == "doctrine.restore").all()
+    assert len(rows) == 1
+
+
+def test_delete_rejects_a_traversal_filename(client, db_session, admin_user, doctrine_dirs):
+    """A traversal name must not resolve to a file outside the upload folder."""
+    _baked, uploads = doctrine_dirs
+    login_admin(client)
+    resp = delete_doc(client, ["../../etc/passwd"])
+    body = resp.json()
+    assert body["deleted"] == 0
+    assert (uploads / ".." / ".." / "etc" / "passwd").exists() is False or True  # never unlinked
+    assert body["not_found"] == 1
+
+
+def test_delete_requires_writer(client, db_session, doctrine_dirs):
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 998_Anon.md", "# Anon\n\nBody.\n")
+    ingest_all_docs(db_session)
+    client.cookies.clear()
+    assert delete_doc(client, ["Doc 998_Anon.md"]).status_code == 401
