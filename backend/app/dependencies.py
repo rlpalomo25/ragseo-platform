@@ -27,6 +27,11 @@ def get_current_user(request: Request, db: DBSession = Depends(get_db)) -> User:
 
 
 def _deny(request: Request, db: DBSession, user: User, detail: str, action: str) -> None:
+    # commit=True is required here and nowhere else. The raise below discards
+    # the session's transaction, so an audit row that only joined the caller's
+    # transaction would be rolled back with it and the denied request would
+    # leave no trace at all. Persisting the 403 is the entire point of logging
+    # it, so this write must survive the exception that is about to be raised.
     log_audit(
         db,
         user=user,
@@ -34,6 +39,7 @@ def _deny(request: Request, db: DBSession, user: User, detail: str, action: str)
         route=request.url.path,
         detail=f"{detail} (role={user.role})",
         status_code=403,
+        commit=True,
     )
     raise HTTPException(status_code=403, detail=detail)
 

@@ -198,15 +198,21 @@ def export_job_markdown(
         raise HTTPException(status_code=404, detail="No completed draft to export")
 
     filename = build_filename(output, job)
-    # log_audit commits the surrounding transaction. This route is read-only, so
-    # that is harmless here, but the audit row is intentionally written last so
-    # rejected exports leave no audit trail.
+    # commit=True because this route is read-only: it mutates nothing else, so
+    # there is no caller's transaction for the audit row to join. Without an
+    # explicit commit the row would be flushed and then discarded when the
+    # session closed at the end of the request, and job.export would leave no
+    # audit trail at all.
+    #
+    # Written last, after the 404 above, so a rejected export still leaves no
+    # audit row — only a served one is recorded.
     log_audit(
         db,
         user=user,
         action="job.export",
         route=f"/api/jobs/{job_id}/export.md",
         detail=f"job={job.id} file={filename}",
+        commit=True,
     )
 
     return Response(

@@ -423,6 +423,11 @@ async def upload_doctrine(
         ),
         status_code=200,
     )
+    # The audit row is written after ingest_files, which has already committed its
+    # own work, so it has no caller transaction to join and needs an explicit
+    # commit of its own. Written last so a batch that raised never records a
+    # success.
+    db.commit()
     return resp
 
 
