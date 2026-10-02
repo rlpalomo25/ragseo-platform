@@ -10,6 +10,8 @@ import type { DoctrineUploadResultResponse } from "@/types/ingest";
 /** Mirrors the server-side caps in app/routers/ingest.py. */
 const MAX_BYTES = 10 * 1024 * 1024;
 const MAX_NAME_LEN = 255;
+const MAX_FILES = 20;
+const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 
 /**
  * The filename contract the ingestion parser depends on. `DOC_PATTERN` needs a
@@ -28,6 +30,22 @@ export function DoctrineUploadCard({ onUploaded }: { onUploaded?: () => void }) 
   const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Batch-level caps, mirroring MAX_FILES / MAX_TOTAL_BYTES on the server.
+  // Checked here as well as there because the server rejects the whole batch:
+  // finding out client-side before the upload starts saves re-sending 50 MB to
+  // receive a 413. These are appended after the per-file problems so the message
+  // is stable and reads the same way every time.
+  const batchProblems: string[] = [];
+  if (files.length > MAX_FILES) {
+    batchProblems.push(`${files.length} files selected: at most ${MAX_FILES} per upload`);
+  }
+  const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+  if (totalBytes > MAX_TOTAL_BYTES) {
+    batchProblems.push(
+      `Total ${(totalBytes / 1024 / 1024).toFixed(1)} MB exceeds the 50 MB per-upload limit`,
+    );
+  }
+
   const localProblems = files
     .map((f) => {
       if (!f.name.toLowerCase().endsWith(".md")) return `${f.name}: must be a .md file`;
@@ -38,7 +56,8 @@ export function DoctrineUploadCard({ onUploaded }: { onUploaded?: () => void }) 
       }
       return null;
     })
-    .filter((p): p is string => p !== null);
+    .filter((p): p is string => p !== null)
+    .concat(batchProblems);
 
   const reset = useCallback(() => {
     setFiles([]);
@@ -81,9 +100,10 @@ export function DoctrineUploadCard({ onUploaded }: { onUploaded?: () => void }) 
           Markdown only, named <code className="rounded bg-gray-200 px-1 dark:bg-gray-700">Doc &lt;number&gt;_&lt;Title&gt;.md</code>
         </p>
         <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-          Up to 10 MB each. Re-uploading the same filename replaces that document;
-          uploading a different filename with an existing doc number supersedes the
-          current one. Library documents shipped with the app are read-only here.
+          Up to {MAX_FILES} files and 50 MB per upload, 10 MB each. Re-uploading the same
+          filename replaces that document; uploading a different filename with an
+          existing doc number supersedes the current one. Library documents shipped with
+          the app are read-only here.
         </p>
 
         <div className="mt-3 flex flex-wrap items-center gap-3">

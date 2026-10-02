@@ -37,7 +37,13 @@ from app.services.external_ingest import (
     import_external_folder,
 )
 from app.services.learning_loop import snapshot_publications
-from app.services.uploads import UploadTooLarge, is_hidden_path, safe_filename, stage_uploads
+from app.services.uploads import (
+    BatchTooLarge,
+    UploadTooLarge,
+    is_hidden_path,
+    safe_filename,
+    stage_uploads,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -46,6 +52,25 @@ router = APIRouter()
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB per uploaded export file
 MAX_DOCTRINE_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB per uploaded doctrine doc
+# Per-file caps do not bound a request. Starlette spools the entire multipart
+# body to a temp file *before* the endpoint runs, so an unbounded batch is a
+# disk-exhaustion primitive by a logged-in writer.
+#
+# `File(..., max_length=N)` is NOT a way to cap the file count: on FastAPI 0.115
+# that argument lands in the pydantic FieldInfo and never reaches Starlette's
+# MultiPartParser, so it is silently ignored for a `list[UploadFile]`. The parser
+# caps live in `Request.form(max_files=...)`, which FastAPI calls with its own
+# defaults. Enforced instead by:
+#   1. RequestBodyLimitMiddleware — rejects on Content-Length before the body is
+#      read at all, which is the only place the 10 GB/200 GB case is caught early.
+#   2. An explicit count check at the top of each route, authoritative for
+#      chunked requests that arrive without a Content-Length.
+MAX_DOCTRINE_FILES = 20
+MAX_DOCTRINE_TOTAL_BYTES = 50 * 1024 * 1024  # 50 MB per batch
+MAX_DOCTRINE_REQUEST_BYTES = 60 * 1024 * 1024  # Content-Length ceiling incl. multipart framing
+MAX_EXTERNAL_FILES = 10
+MAX_EXTERNAL_TOTAL_BYTES = 500 * 1024 * 1024  # 500 MB per batch
+MAX_EXTERNAL_REQUEST_BYTES = 510 * 1024 * 1024  # Content-Length ceiling incl. multipart framing
 # Document.filename is String(255); a longer name would be truncated by the DB
 # (or rejected outright on Postgres) and then never match its own file again.
 MAX_DOCTRINE_FILENAME_LEN = 255
@@ -288,6 +313,18 @@ async def upload_doctrine(
     upload_dir = Path(settings.doctrine_upload_path)
     baked = _baked_doctrine_names()
 
+    # Authoritative count cap. The middleware has already rejected an oversized
+    # Content-Length before this ran, but that header is optional and can simply
+    # be omitted, so the batch is counted here as well. Checked before any read.
+    if len(files) > MAX_DOCTRINE_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"{len(files)} files exceeds the {MAX_DOCTRINE_FILES} file limit for one "
+                "request. Send fewer documents at a time."
+            ),
+        )
+
     # Validate every name before reading a single byte, so a bad name anywhere in
     # the batch cannot leave half of it on disk for the hourly reconcile to find.
     planned: list[tuple[str, UploadFile]] = []
@@ -320,11 +357,25 @@ async def upload_doctrine(
             supersedes[name] = f"{current.doc_number} ({current.title})"
 
     try:
-        saved = await stage_uploads(planned, upload_dir, max_bytes=MAX_DOCTRINE_UPLOAD_BYTES)
+        saved = await stage_uploads(
+            planned,
+            upload_dir,
+            max_bytes=MAX_DOCTRINE_UPLOAD_BYTES,
+            max_total_bytes=MAX_DOCTRINE_TOTAL_BYTES,
+        )
     except UploadTooLarge as e:
         raise HTTPException(
             status_code=413,
             detail=f"'{e.name}' exceeds the {e.limit // (1024 * 1024)} MB per-file limit",
+        ) from e
+    except BatchTooLarge as e:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"This batch exceeds the {e.limit // (1024 * 1024)} MB total limit. "
+                f"Send fewer documents at a time (up to {MAX_DOCTRINE_FILES} files, "
+                f"{MAX_DOCTRINE_UPLOAD_BYTES // (1024 * 1024)} MB each)."
+            ),
         ) from e
     for path in saved:
         logger.info(
@@ -536,6 +587,17 @@ async def upload_external(
         upload_dir = upload_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
+    # Authoritative count cap; see upload_doctrine for why this is not only
+    # enforced in the middleware.
+    if len(files) > MAX_EXTERNAL_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"{len(files)} files exceeds the {MAX_EXTERNAL_FILES} file limit for one "
+                "request. Send fewer exports at a time."
+            ),
+        )
+
     # Staged rather than written in-loop: a size cap tripped on a later file must
     # not leave earlier ones in the upload dir, where the caller believes nothing
     # was saved and the next import sweep would ingest them anyway.
@@ -547,9 +609,23 @@ async def upload_external(
         planned.append((name, f))
 
     try:
-        saved = await stage_uploads(planned, upload_dir, max_bytes=MAX_UPLOAD_BYTES)
+        saved = await stage_uploads(
+            planned,
+            upload_dir,
+            max_bytes=MAX_UPLOAD_BYTES,
+            max_total_bytes=MAX_EXTERNAL_TOTAL_BYTES,
+        )
     except UploadTooLarge as e:
         raise HTTPException(status_code=413, detail=f"{e.name} exceeds {e.limit // (1024 * 1024)} MB") from e
+    except BatchTooLarge as e:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"This batch exceeds the {e.limit // (1024 * 1024)} MB total limit. "
+                f"Send fewer exports at a time (up to {MAX_EXTERNAL_FILES} files, "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB each)."
+            ),
+        ) from e
     for path in saved:
         logger.info("User '%s' uploaded %s (%d bytes)", user.username, path.name, path.stat().st_size)
 

@@ -31,6 +31,20 @@ class UploadTooLarge(Exception):
         self.limit = limit
 
 
+class BatchTooLarge(Exception):
+    """A batch exceeded its aggregate byte or file-count cap.
+
+    Distinct from :class:`UploadTooLarge` so the router can answer 413 with a
+    message that says *which* limit was hit: a per-file cap tells the user to
+    split that one document, a batch cap tells them to send fewer at once.
+    """
+
+    def __init__(self, message: str, *, limit: int, count: int | None = None):
+        super().__init__(message)
+        self.limit = limit
+        self.count = count
+
+
 def safe_filename(name: str) -> str:
     """Basename only, cross-platform (strips any directory components).
 
@@ -68,6 +82,7 @@ async def stage_uploads(
     dest_dir: Path,
     *,
     max_bytes: int,
+    max_total_bytes: int | None = None,
     before_commit=None,
 ) -> list[Path]:
     """Validate-then-atomically-commit a batch of uploads.
@@ -101,12 +116,21 @@ async def stage_uploads(
     destinations already committed by *this* call are removed and the exception
     propagates, so a failed request leaves the folder as it found it.
 
+    ``max_total_bytes`` caps the batch as a whole, not just each file. The
+    per-file cap alone does not bound a request: N files of exactly the per-file
+    limit is N x that limit, and starlette spools the whole body to disk before
+    this is called, so an unbounded batch is a disk-exhaustion primitive. The
+    running total is checked *while* streaming, so an oversized batch aborts at
+    the byte that crosses the line rather than after buffering all of it, and the
+    staging dir is discarded so nothing is left behind.
+
     ``before_commit`` is a test seam: called with the staging dir just before the
     renames, so a test can assert on the intermediate state (or inject a failure)
     without racing a real 40 MB transfer.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     committed: list[Path] = []
+    total = 0
     staging = Path(tempfile.mkdtemp(prefix=STAGING_PREFIX, dir=dest_dir))
     try:
         for name, upload in entries:
@@ -120,6 +144,13 @@ async def stage_uploads(
                     written += len(chunk)
                     if written > max_bytes:
                         raise UploadTooLarge(name, max_bytes)
+                    total += len(chunk)
+                    if max_total_bytes is not None and total > max_total_bytes:
+                        raise BatchTooLarge(
+                            f"batch exceeds {max_total_bytes} bytes in total",
+                            limit=max_total_bytes,
+                            count=len(entries),
+                        )
                     fh.write(chunk)
 
         if before_commit is not None:

@@ -486,7 +486,7 @@ def test_upload_streams_rather_than_buffering_the_batch(client, admin_user, doct
     reads: list[int] = []
     real_stage = uploads_service.stage_uploads
 
-    async def counting_stage(entries, dest_dir, *, max_bytes):
+    async def counting_stage(entries, dest_dir, *, max_bytes, max_total_bytes=None):
         for _name, upload in entries:
             original_read = upload.read
 
@@ -554,7 +554,7 @@ def test_commit_stages_on_the_destination_filesystem(client, admin_user, doctrin
 
     real_stage = uploads_service.stage_uploads
 
-    async def capturing_stage(entries, dest_dir, *, max_bytes, before_commit=None):
+    async def capturing_stage(entries, dest_dir, *, max_bytes, max_total_bytes=None, before_commit=None):
         return await real_stage(entries, dest_dir, max_bytes=max_bytes, before_commit=before_commit or record)
 
     monkeypatch.setattr(uploads_service, "stage_uploads", capturing_stage)
@@ -644,7 +644,7 @@ def test_nothing_is_visible_in_the_upload_dir_before_commit(client, admin_user, 
 
     real_stage = uploads_service.stage_uploads
 
-    async def injecting_stage(entries, dest_dir, *, max_bytes, before_commit=None):
+    async def injecting_stage(entries, dest_dir, *, max_bytes, max_total_bytes=None, before_commit=None):
         return await real_stage(entries, dest_dir, max_bytes=max_bytes, before_commit=before_commit or peek)
 
     monkeypatch.setattr(uploads_service, "stage_uploads", injecting_stage)
@@ -848,3 +848,133 @@ def test_ingest_files_rebuilds_references_for_new_docs(db_session, doctrine_dirs
     doc = db_session.query(Document).filter(Document.doc_number == "830").one()
     refs = db_session.query(DocReference).filter(DocReference.source_doc_id == doc.id).all()
     assert [r.target_doc_number for r in refs] == ["100"]
+
+
+# ------------------------------------------------------------- batch caps
+# The per-file cap alone does not bound a request. These cover the two aggregate
+# limits: file count and total bytes across the batch.
+
+
+def test_upload_rejects_a_batch_over_the_file_count_cap(client, admin_user, db_session, doctrine_dirs):
+    login_admin(client)
+    n = ingest_router.MAX_DOCTRINE_FILES + 1
+    resp = upload(client, [(f"Doc {4000 + i}_ Cap.md", b"body") for i in range(n)])
+
+    assert resp.status_code == 413
+    assert str(ingest_router.MAX_DOCTRINE_FILES) in resp.json()["detail"]
+    assert list(db_session.query(Document).all()) == [], "nothing may be ingested past the cap"
+    assert not list(doctrine_dirs[1].glob("*.md")), "nothing may be written past the cap"
+
+
+def test_upload_accepts_a_batch_exactly_at_the_file_count_cap(client, admin_user, db_session, doctrine_dirs):
+    login_admin(client)
+    n = ingest_router.MAX_DOCTRINE_FILES
+    resp = upload(client, [(f"Doc {4100 + i}_ Cap.md", b"body") for i in range(n)])
+
+    assert resp.status_code == 200
+    assert resp.json()["created"] == n
+    assert len(list(doctrine_dirs[1].glob("*.md"))) == n
+
+
+def test_upload_rejects_a_batch_over_the_total_byte_cap(
+    client, admin_user, db_session, doctrine_dirs, monkeypatch
+):
+    """Total cap trips even though every single file is under the per-file cap.
+
+    The per-file cap is monkeypatched high on purpose: the point is that a batch
+    of individually-legal files must still be refused as a batch.
+    """
+    login_admin(client)
+    monkeypatch.setattr(ingest_router, "MAX_DOCTRINE_UPLOAD_BYTES", 10 * 1024 * 1024)
+    monkeypatch.setattr(ingest_router, "MAX_DOCTRINE_TOTAL_BYTES", 40 * 1024)
+
+    # 6 files x 10 KB = 60 KB, all individually legal, batch total over 40 KB.
+    resp = upload(client, [(f"Doc {4200 + i}_ Big.md", b"z" * 10_000) for i in range(6)])
+
+    assert resp.status_code == 413
+    assert "total limit" in resp.json()["detail"]
+    assert list(db_session.query(Document).all()) == [], "an over-cap batch must not be partially ingested"
+    assert not list(doctrine_dirs[1].glob("*.md")), "staging must be discarded, not committed"
+    assert not list(doctrine_dirs[1].glob(".staging-*")), "the staging dir must be cleaned up"
+
+
+def test_upload_accepts_a_batch_exactly_at_the_total_byte_cap(
+    client, admin_user, db_session, doctrine_dirs, monkeypatch
+):
+    login_admin(client)
+    monkeypatch.setattr(ingest_router, "MAX_DOCTRINE_TOTAL_BYTES", 40 * 1024)
+
+    # 4 x 10 KB = 40 KB exactly, which is allowed (the cap trips on > limit).
+    resp = upload(client, [(f"Doc {4300 + i}_ Ok.md", b"y" * 10_000) for i in range(4)])
+
+    assert resp.status_code == 200
+    assert resp.json()["created"] == 4
+
+
+def test_stage_uploads_total_cap_stops_at_the_crossing_byte(tmp_path):
+    """The aggregate check aborts mid-stream, not after buffering the whole batch.
+
+    Asserting on read counts matters: a check placed after the read loop would
+    still cap the damage on disk but would pull every byte over the wire first.
+    """
+    import asyncio
+
+    from app.services.uploads import BatchTooLarge, stage_uploads
+
+    dest = tmp_path / "dest"
+    calls: list[str] = []
+
+    class CountingUpload:
+        def __init__(self, name, size):
+            self.name, self.size, self.remaining = name, size, size
+
+        async def read(self, n):
+            calls.append(self.name)
+            chunk = b"a" * min(n, self.remaining)
+            self.remaining -= len(chunk)
+            return chunk
+
+    with pytest.raises(BatchTooLarge):
+        asyncio.run(
+            stage_uploads(
+                [("a.md", CountingUpload("a.md", 40_000)), ("b.md", CountingUpload("b.md", 40_000))],
+                dest,
+                max_bytes=200_000,
+                max_total_bytes=10_000,
+            )
+        )
+
+    # The first read of a.md alone already exceeds the 10 KB batch cap, so the
+    # exception is raised on that read and b.md is never opened. An over-cap
+    # batch is refused at the crossing byte rather than after the whole body has
+    # been pulled over the wire and spooled.
+    assert calls == ["a.md"], f"cap should trip on the first file, got {calls}"
+    assert not list(dest.glob("*.md"))
+    assert not list(dest.glob(".staging-*"))
+
+
+def test_stage_uploads_without_a_total_cap_is_unbounded_by_batch(tmp_path):
+    """max_total_bytes is opt-in, so existing callers keep their old behaviour."""
+    import asyncio
+
+    from app.services.uploads import stage_uploads
+
+    dest = tmp_path / "dest"
+
+    class Upload:
+        def __init__(self, size):
+            self.remaining = size
+
+        async def read(self, n):
+            chunk = b"a" * min(n, self.remaining)
+            self.remaining -= len(chunk)
+            return chunk
+
+    saved = asyncio.run(
+        stage_uploads(
+            [("a.md", Upload(30_000)), ("b.md", Upload(30_000))],
+            dest,
+            max_bytes=100_000,
+        )
+    )
+    assert len(saved) == 2

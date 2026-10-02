@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.middleware import RequestBodyLimitMiddleware
 from app.routers import agents, audit, auth, documents, ingest, jobs, learning, stats, users
 
 settings = get_settings()
@@ -27,6 +28,11 @@ app.add_middleware(
     # filename on cross-origin dev (frontend :3000 -> API :8000).
     expose_headers=["Content-Disposition"],
 )
+
+# Added last, so it is outermost and runs before CORS: a 413 must not be delayed
+# or have its headers mangled by the CORS layer, and the client still needs the
+# readable body. Starlette applies middleware in reverse registration order.
+app.add_middleware(RequestBodyLimitMiddleware)
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(users.router, prefix="/api/users", tags=["users"])
