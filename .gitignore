@@ -31,3 +31,6 @@ CONTEXT-*.md
 
 # OS / editor
 .DS_Store
+# Doctrine library, mounted read-only at /app/doctrine in prod. Ops-managed
+# and untracked by design: it is content, not code, and prod reads it from the host.
+doctrine/

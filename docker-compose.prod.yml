@@ -95,10 +95,19 @@ services:
       # The baked /app/external copy stays read-only inside the image.
       - ./external_uploads:/app/uploads/external
       # Writable folder for doctrine .md uploaded through the website
-      # (POST /api/ingest/doctrine/upload). The baked /app/doctrine library is
-      # the image layer and is deliberately NOT mounted here: library edits are
-      # an ops task, so nothing the API writes can alter or shadow them.
+      # (POST /api/ingest/doctrine/upload).
       - ./doctrine_uploads:/app/uploads/doctrine
+      # The library itself, mounted READ-ONLY so an ops edit is the only way to
+      # change it and nothing the API writes can alter or shadow it.
+      #
+      # This used to be baked into the image by `COPY doctrine/`. That was
+      # unsafe: the build context is ./backend, so the library has to exist at
+      # backend/doctrine/ on whatever host builds the image. A host without it
+      # builds cleanly and produces an EMPTY /app/doctrine, and the hourly
+      # reconcile then marks all 122 documents `missing` with no error anywhere.
+      # Mounting it makes the library a first-class, backup-able directory on
+      # the host instead of an invisible image layer.
+      - ./doctrine:/app/doctrine:ro
     depends_on:
       db:
         condition: service_healthy
@@ -147,6 +156,9 @@ services:
     volumes:
       - ./external_uploads:/app/uploads/external
       - ./doctrine_uploads:/app/uploads/doctrine
+      # The worker must see the same library the API serves, or the reconcile
+      # sweep sees zero files and marks every active document `missing`.
+      - ./doctrine:/app/doctrine:ro
     depends_on:
       db:
         condition: service_healthy
