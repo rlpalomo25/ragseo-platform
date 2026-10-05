@@ -121,6 +121,36 @@ def test_reconcile_restores_a_doc_whose_file_comes_back(db_session, doctrine_dir
     assert "Back again." in doc.content
 
 
+def test_reconcile_counts_unchanged_files_as_skipped(db_session, doctrine_dirs):
+    """``skipped`` must account for every file the sweep walked.
+
+    The counter used to be left at 0 by ``reconcile_doctrine`` (only ``updated``
+    and ``created`` were tallied), so a perfectly healthy hourly run reported
+    created=0 updated=0 skipped=0 missing=0 — indistinguishable from a sweep that
+    walked nothing and verified nothing. Pin the number so the sweep's own output
+    can be trusted as evidence it did work.
+    """
+    baked, uploads = doctrine_dirs
+    for number in ("100", "200", "300"):
+        write_doc(baked, f"Doc {number}_ Library Doc.md")
+    write_doc(uploads, "Doc 400_ Uploaded Protocol.md")
+
+    first = reconcile_doctrine(db_session)
+    assert first["created"] == 4
+    assert first["skipped"] == 0
+
+    second = reconcile_doctrine(db_session)
+    assert second["created"] == 0
+    assert second["updated"] == 0
+    assert second["missing"] == 0
+    assert second["skipped"] == 4, "an unchanged sweep must still report the files it compared"
+
+    # One changed file must not hide the three that were skipped.
+    write_doc(baked, "Doc 100_ Library Doc.md", "# Library Doc\n\nRevised body.\n")
+    third = reconcile_doctrine(db_session)
+    assert (third["updated"], third["skipped"], third["missing"]) == (1, 3, 0)
+
+
 def test_ingest_all_docs_scans_both_folders(db_session, doctrine_dirs):
     baked, uploads = doctrine_dirs
     write_doc(baked, "Doc 100_ Library Doc.md")

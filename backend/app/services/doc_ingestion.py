@@ -456,7 +456,12 @@ def reconcile_doctrine(db: DBSession) -> dict:
     the upload folder — a scan of the baked folder alone would mark every
     uploaded document ``missing`` within the hour.
 
-    Returns stats dict with created, updated, missing, superseded, errors.
+    Returns stats dict with created, updated, skipped, missing, superseded, errors.
+
+    ``skipped`` counts files whose bytes were already in the DB — i.e. the healthy
+    steady state, and the only way to tell a real compare-and-unchanged pass apart
+    from a sweep that silently walked nothing. It used to be reported as a flat 0,
+    which made every healthy hourly run look like a no-op.
     """
     _doctrine_folders_or_fail()
 
@@ -487,6 +492,8 @@ def reconcile_doctrine(db: DBSession) -> dict:
                 stats["updated"] += 1
             elif outcome == "created":
                 stats["created"] += 1
+            else:
+                stats["skipped"] += 1
         except Exception as e:
             stats["errors"].append(f"{filepath.name}: {e!s}")
 
