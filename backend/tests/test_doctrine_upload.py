@@ -1181,3 +1181,125 @@ def test_delete_requires_writer(client, db_session, doctrine_dirs):
     ingest_all_docs(db_session)
     client.cookies.clear()
     assert delete_doc(client, ["Doc 998_Anon.md"]).status_code == 401
+
+
+# ------------------------------------------------------- uploaded-doc listing
+#
+# GET /api/ingest/doctrine/uploads is what makes the delete/restore pair usable
+# from the website: /api/docs lists only `active` rows and cannot say which of
+# them came from an upload, so a UI on that list could neither offer delete nor
+# find a deleted row to undo.
+
+
+def list_uploads(client):
+    return client.get("/api/ingest/doctrine/uploads")
+
+
+def test_uploaded_listing_separates_uploads_from_the_library(client, db_session, admin_user, doctrine_dirs):
+    baked, uploads = doctrine_dirs
+    write_doc(baked, "Doc 100_ Library Doc.md")
+    write_doc(uploads, "Doc 400_ Uploaded Protocol.md")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    body = list_uploads(client).json()
+    assert [u["filename"] for u in body["uploads"]] == ["Doc 400_ Uploaded Protocol.md"]
+    assert body["uploads"][0]["doc_number"] == "400"
+    assert body["uploads"][0]["status"] == "active"
+    assert body["uploads"][0]["chunks"] >= 1
+
+
+def test_uploaded_listing_includes_deleted_rows_so_they_can_be_undone(
+    client, db_session, admin_user, doctrine_dirs
+):
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 410_ Removable.md", "# Removable\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    assert [u["status"] for u in list_uploads(client).json()["uploads"]] == ["active"]
+
+    delete_doc(client, ["Doc 410_ Removable.md"])
+
+    rows = list_uploads(client).json()["uploads"]
+    assert [u["status"] for u in rows] == ["deleted"], "a deleted row is where undo lives"
+    # The file is gone, so the chunk count is 0 — but the row must still be listed.
+    assert rows[0]["chunks"] == 0
+
+    restore_doc(client, ["Doc 410_ Removable.md"])
+    assert [u["status"] for u in list_uploads(client).json()["uploads"]] == ["active"]
+
+
+def test_uploaded_listing_ignores_a_row_whose_file_vanished_on_its_own(
+    client, db_session, admin_user, doctrine_dirs
+):
+    """A `missing` upload is an ops problem, not something to offer delete for.
+
+    Its file is already gone, so a delete button would 404 on the unlink and an
+    undo would restore content nobody can account for.
+    """
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 420_ Vanishing.md", "# Vanishing\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    (uploads / "Doc 420_ Vanishing.md").unlink()
+    reconcile_doctrine(db_session)
+
+    assert list_uploads(client).json()["uploads"] == []
+
+
+def test_uploaded_listing_keeps_a_superseded_upload_whose_file_survives(
+    client, db_session, admin_user, doctrine_dirs
+):
+    """Superseded but still on disk => listed and still deletable.
+
+    The upload endpoint supersedes on a doc-number collision, so this is the
+    normal result of replacing a document by uploading a differently-named file
+    with the same number. The old file is not garbage; the operator uploaded it.
+    """
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 440_ Old Take.md", "# Old Take\n\nOriginal.\n")
+    ingest_all_docs(db_session)
+    write_doc(uploads, "Doc 440_ New Take.md", "# New Take\n\nReplacement.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    rows = list_uploads(client).json()["uploads"]
+    by_name = {u["filename"]: u for u in rows}
+    assert by_name["Doc 440_ New Take.md"]["status"] == "active"
+    assert by_name["Doc 440_ Old Take.md"]["status"] == "superseded"
+
+    # And the superseded one can actually be removed, rather than only listed.
+    body = delete_doc(client, ["Doc 440_ Old Take.md"]).json()
+    assert body["deleted"] == 1
+
+
+def test_a_successful_restore_reports_restored_not_deleted(client, db_session, admin_user, doctrine_dirs):
+    """The per-file status must not say "deleted" after a successful undo.
+
+    Delete and restore share one response shape, so the status vocabulary is
+    shared too. Reporting the restored document as "deleted" is the one answer
+    that is unambiguously wrong, and it reaches the UI verbatim.
+    """
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 995_Restored.md", "# Restored\n\nBody.\n")
+    ingest_all_docs(db_session)
+    login_admin(client)
+
+    delete_doc(client, ["Doc 995_Restored.md"])
+    body = restore_doc(client, ["Doc 995_Restored.md"]).json()
+
+    assert body["restored"] == 1
+    item = body["files"][0]
+    assert item["status"] == "restored", item
+    assert item["undoable"] is False
+    assert db_session.query(Document).filter(Document.doc_number == "995").one().status == "active"
+
+
+def test_uploaded_listing_requires_writer(client, db_session, doctrine_dirs):
+    _baked, uploads = doctrine_dirs
+    write_doc(uploads, "Doc 430_ Guarded.md", "# Guarded\n\nBody.\n")
+    ingest_all_docs(db_session)
+    client.cookies.clear()
+    assert list_uploads(client).status_code == 401

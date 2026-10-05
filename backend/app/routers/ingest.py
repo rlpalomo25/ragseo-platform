@@ -497,7 +497,11 @@ class DoctrineDeleteRequest(BaseModel):
 class DoctrineDeleteItem(BaseModel):
     filename: str
     doc_number: str | None = None
-    status: str  # "deleted" | "library" | "not_found" | "error"
+    # "deleted" | "restored" | "library" | "not_found" | "error". Shared by the
+    # delete and restore responses, so "restored" exists because reusing the
+    # delete vocabulary here would report a successful restore as "deleted" —
+    # the one answer that is definitely wrong.
+    status: str
     message: str | None = None
     undoable: bool = False
 
@@ -521,6 +525,20 @@ class DoctrineRestoreResultResponse(BaseModel):
     not_found: int = 0
     errors: int = 0
     files: list[DoctrineDeleteItem]
+
+
+class DoctrineUploadListItem(BaseModel):
+    filename: str
+    doc_number: str
+    title: str
+    status: str
+    chunks: int = 0
+    last_updated: str | None = None
+
+
+class DoctrineUploadListResponse(BaseModel):
+    message: str
+    uploads: list[DoctrineUploadListItem]
 
 
 @router.get("/ingest/external/status", response_model=ExternalStatusResponse)
@@ -803,6 +821,63 @@ def _doctrine_library_names() -> set[str]:
     return {p.name for p in library.iterdir() if p.is_file()}
 
 
+@router.get("/ingest/doctrine/uploads", response_model=DoctrineUploadListResponse)
+def list_doctrine_uploads(
+    user: User = Depends(require_writer),
+    db: DBSession = Depends(get_db),
+):
+    """List the documents uploaded through the website (writer or admin).
+
+    The delete/restore pair is useless without a list to act on: ``/api/docs``
+    shows only ``active`` documents and cannot say which of them came from an
+    upload, so a UI there could neither offer delete nor find a deleted row to
+    undo. This is the doctrine counterpart of ``/api/ingest/external/status``.
+
+    Deleted rows are included deliberately — that is where undo lives, and a row
+    whose file is gone still owns its content in the ``content`` column. Library
+    files are excluded, since the website refuses to delete them.
+
+    A row that is neither on disk nor ``deleted`` is left out: ``missing`` means
+    the file vanished on its own (an ops problem, and there is nothing for the
+    delete endpoint to unlink), and the restore endpoint only accepts
+    ``deleted``, so listing it would offer no action at all. A *superseded*
+    upload still has its file and is therefore listed through the on-disk test.
+    """
+    library = _doctrine_library_names()
+    upload_dir = Path(settings.doctrine_upload_path)
+    on_disk = {p.name for p in upload_dir.iterdir() if p.is_file()} if upload_dir.is_dir() else set()
+
+    docs = db.query(Document).order_by(Document.doc_number).all()
+    doc_ids = [d.id for d in docs]
+    chunk_counts = (
+        dict(
+            db.query(DocChunk.document_id, func.count(DocChunk.id))
+            .filter(DocChunk.document_id.in_(doc_ids))
+            .group_by(DocChunk.document_id)
+            .all()
+        )
+        if doc_ids
+        else {}
+    )
+
+    uploads = [
+        DoctrineUploadListItem(
+            filename=doc.filename,
+            doc_number=doc.doc_number,
+            title=doc.title,
+            status=doc.status,
+            chunks=chunk_counts.get(doc.id, 0),
+            last_updated=doc.last_updated.isoformat() if doc.last_updated else None,
+        )
+        for doc in docs
+        if doc.filename not in library and (doc.filename in on_disk or doc.status == "deleted")
+    ]
+    return DoctrineUploadListResponse(
+        message=f"{len(uploads)} uploaded document(s)",
+        uploads=uploads,
+    )
+
+
 @router.delete("/ingest/doctrine/delete", response_model=DoctrineDeleteResultResponse)
 def delete_doctrine(
     payload: DoctrineDeleteRequest,
@@ -970,7 +1045,7 @@ def restore_doctrine(
         )
         resp.restored += 1
         resp.files.append(
-            DoctrineDeleteItem(filename=name, doc_number=doc.doc_number, status="deleted", undoable=False)
+            DoctrineDeleteItem(filename=name, doc_number=doc.doc_number, status="restored", undoable=False)
         )
 
     resp.message = f"Restored {resp.restored} document(s)"

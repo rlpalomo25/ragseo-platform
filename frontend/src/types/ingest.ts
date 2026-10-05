@@ -121,3 +121,50 @@ export interface DoctrineUploadResultResponse {
   chunks: number;
   files: DoctrineUploadItem[];
 }
+
+// --- Doctrine delete/undo (GET /api/ingest/doctrine/uploads,
+//     DELETE /api/ingest/doctrine/delete, POST /api/ingest/doctrine/restore) ---
+
+/**
+ * `status` is the Document row's status, not the outcome of a request. The UI
+ * keys its actions off it: anything not `deleted` can be deleted, and only
+ * `deleted` can be restored.
+ */
+export interface DoctrineUploadedDoc {
+  filename: string;
+  doc_number: string;
+  title: string;
+  status: "active" | "deleted" | "missing" | "superseded";
+  chunks: number;
+  last_updated: string | null;
+}
+
+export interface DoctrineUploadListResponse {
+  message: string;
+  uploads: DoctrineUploadedDoc[];
+}
+
+export interface DoctrineDeleteItem {
+  filename: string;
+  doc_number: string | null;
+  status: "deleted" | "library" | "not_found" | "error";
+  message: string | null;
+  undoable: boolean;
+}
+
+export interface DoctrineDeleteResultResponse {
+  message: string;
+  deleted: number;
+  library: number;
+  not_found: number;
+  errors: number;
+  files: DoctrineDeleteItem[];
+}
+
+export interface DoctrineRestoreResultResponse {
+  message: string;
+  restored: number;
+  not_found: number;
+  errors: number;
+  files: DoctrineDeleteItem[];
+}

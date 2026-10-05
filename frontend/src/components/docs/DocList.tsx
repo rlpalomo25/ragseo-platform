@@ -8,6 +8,7 @@ import { DocSeries } from "./DocSeries";
 import { DocType } from "./DocType";
 import { DocCard } from "./DocCard";
 import { DoctrineUploadCard } from "./DoctrineUploadCard";
+import { DoctrineManageCard } from "./DoctrineManageCard";
 import { Spinner } from "@/components/ui/Spinner";
 
 export function DocList() {
@@ -33,9 +34,10 @@ export function DocList() {
   });
 
   // Revalidate every cached docs list, not just the visible page: an upload can
-  // change the total, the series breakdown and the current page at once.
+  // change the total, the series breakdown and the current page at once. The
+  // uploaded-doctrine list is included because an upload adds a row to it too.
   const { mutate: mutateAll } = useSWR((key: string) =>
-    key.startsWith("/api/docs") ? key : null
+    key.startsWith("/api/docs") || key.startsWith("/api/ingest/doctrine/uploads") ? key : null
   );
   const refreshAfterUpload = () => {
     void mutate();
@@ -45,6 +47,7 @@ export function DocList() {
   return (
     <div className="space-y-4">
       <DoctrineUploadCard onUploaded={refreshAfterUpload} />
+      <DoctrineManageCard onChanged={refreshAfterUpload} />
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <DocSearch
           value={search}

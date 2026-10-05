@@ -9,6 +9,9 @@ import type {
   ExternalImportResultResponse,
   ExternalDeleteResultResponse,
   DoctrineUploadResultResponse,
+  DoctrineUploadListResponse,
+  DoctrineDeleteResultResponse,
+  DoctrineRestoreResultResponse,
 } from "@/types/ingest";
 
 const ingestFetcher = (url: string) => apiFetch<IngestStatusResponse>(url);
@@ -63,4 +66,34 @@ export async function uploadDoctrineFiles(
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
   return apiUpload<DoctrineUploadResultResponse>("/api/ingest/doctrine/upload", formData);
+}
+
+/**
+ * The uploaded-doctrine list behind the delete/undo controls. Refreshed on
+ * focus like the other status hooks so a delete made in another tab shows up.
+ */
+export function useDoctrineUploads() {
+  return useSWR<DoctrineUploadListResponse>(
+    "/api/ingest/doctrine/uploads",
+    (url: string) => apiFetch<DoctrineUploadListResponse>(url),
+    { revalidateOnFocus: true }
+  );
+}
+
+export async function deleteDoctrineFiles(
+  filenames: string[]
+): Promise<DoctrineDeleteResultResponse> {
+  return apiFetch<DoctrineDeleteResultResponse>("/api/ingest/doctrine/delete", {
+    method: "DELETE",
+    body: JSON.stringify({ filenames }),
+  });
+}
+
+export async function restoreDoctrineFiles(
+  filenames: string[]
+): Promise<DoctrineRestoreResultResponse> {
+  return apiFetch<DoctrineRestoreResultResponse>("/api/ingest/doctrine/restore", {
+    method: "POST",
+    body: JSON.stringify({ filenames }),
+  });
 }
