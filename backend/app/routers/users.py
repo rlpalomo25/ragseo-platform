@@ -46,6 +46,15 @@ def create_user(body: CreateUser, admin: User = Depends(require_admin), db: DBSe
         role=body.role,
     )
     db.add(user)
+    db.flush()
+    log_audit(
+        db,
+        user=admin,
+        action="user.create",
+        route="/api/users",
+        detail=f"Created user '{user.username}' with role {user.role}",
+        status_code=201,
+    )
     db.commit()
     db.refresh(user)
     return _response(user)
@@ -58,12 +67,35 @@ def update_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Captured before the writes: an audit row saying "role admin -> writer" is
+    # only useful if it records what the value actually was.
+    changes: list[str] = []
     if body.role is not None:
         if body.role not in ("admin", "writer"):
             raise HTTPException(status_code=400, detail="Role must be 'admin' or 'writer'")
+        if body.role != user.role:
+            changes.append(f"role {user.role} -> {body.role}")
         user.role = body.role
     if body.is_active is not None:
+        if body.is_active != user.is_active:
+            changes.append(f"is_active {user.is_active} -> {body.is_active}")
         user.is_active = body.is_active
+    db.flush()
+    # Audited even when nothing actually changed, so "an admin PUT and the row
+    # says no change" is a record rather than a gap. The detail says which.
+    log_audit(
+        db,
+        user=admin,
+        action="user.update",
+        route=f"/api/users/{user_id}",
+        detail=(
+            f"Updated user '{user.username}': {'; '.join(changes)}"
+            if changes
+            else f"Updated user '{user.username}': no change"
+        ),
+        status_code=200,
+    )
     db.commit()
     db.refresh(user)
     return _response(user)

@@ -80,9 +80,13 @@ if mismatched or unhashed:
     print("  Applying would make the next reconcile re-ingest the entire library.")
     sys.exit(1)
 
-# Must be the repo-root doctrine/ dir, NOT backend/doctrine/: prod compose mounts
-# it read-only at /app/doctrine. backend/ is the build context, so a file dropped
-# there is invisible to a running container.
+# Writes into ./doctrine because that is what docker-compose.prod.yml mounts at
+# /app/doctrine. It is NOT because backend/ is somehow invisible to a running
+# container — backend/doctrine is tracked in git and is the build context, but
+# nothing mounts it, so a file dropped there is not served. If that mount is ever
+# repointed (e.g. at ./backend/doctrine), change this target and the path in
+# scripts/backup_db.sh in the same commit, or a restore will write somewhere
+# nothing reads.
 live = Path("doctrine")
 live.mkdir(parents=True, exist_ok=True)
 for name in matched:

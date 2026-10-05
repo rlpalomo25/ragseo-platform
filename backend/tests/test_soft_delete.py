@@ -125,3 +125,53 @@ def test_delete_and_restore_write_audit_rows(client, db_session, admin_user, tes
     rows = db_session.query(AuditLog).all()
     assert {a.action for a in rows} >= {"user.delete", "user.restore"}
     assert all(a.username == "testadmin" for a in rows)
+
+
+def test_create_user_writes_an_audit_row(client, db_session, admin_user):
+    """Creating an account is a privileged act and used to leave no trace."""
+    _login_as_admin(client, admin_user)
+    resp = client.post(
+        "/api/users", json={"username": "audited_writer", "password": "secret123", "role": "writer"}
+    )
+    assert resp.status_code == 201
+
+    rows = db_session.query(AuditLog).filter(AuditLog.action == "user.create").all()
+    assert len(rows) == 1
+    assert rows[0].username == "testadmin"
+    assert "audited_writer" in rows[0].detail
+    assert "writer" in rows[0].detail
+
+
+def test_role_escalation_is_audited_with_the_before_and_after(
+    client, db_session, admin_user, test_user
+):
+    """The row has to say what the role WAS, or it cannot answer "who elevated this?"."""
+    _login_as_admin(client, admin_user)
+    resp = client.put(f"/api/users/{test_user.id}", json={"role": "admin"})
+    assert resp.status_code == 200
+    assert resp.json()["role"] == "admin"
+
+    rows = db_session.query(AuditLog).filter(AuditLog.action == "user.update").all()
+    assert len(rows) == 1
+    assert rows[0].username == "testadmin"
+    assert "role writer -> admin" in rows[0].detail, rows[0].detail
+
+
+def test_a_no_op_update_is_still_audited(client, db_session, admin_user, test_user):
+    """Recorded even when nothing changed, so an admin PUT is never a silent gap."""
+    _login_as_admin(client, admin_user)
+    resp = client.put(f"/api/users/{test_user.id}", json={"role": "writer"})
+    assert resp.status_code == 200
+
+    rows = db_session.query(AuditLog).filter(AuditLog.action == "user.update").all()
+    assert len(rows) == 1
+    assert "no change" in rows[0].detail, rows[0].detail
+
+
+def test_a_rejected_update_writes_no_audit_row(client, db_session, admin_user, test_user):
+    """The 400 happens before the audit call, so the log cannot describe a change
+    that was refused."""
+    _login_as_admin(client, admin_user)
+    resp = client.put(f"/api/users/{test_user.id}", json={"role": "superuser"})
+    assert resp.status_code == 400
+    assert db_session.query(AuditLog).filter(AuditLog.action == "user.update").count() == 0

@@ -11,7 +11,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Content baked at build time (staged by scripts/sync_doctrine.sh — Prompt 7).
+# Content baked at build time from the tracked copies under backend/ (staged by
+# scripts/sync_doctrine.sh). KEEP THIS even though prod mounts ./doctrine over
+# /app/doctrine: the mount shadows these files, so in prod this copy is inert,
+# but it is what makes a clean checkout build a working image. .dockerignore
+# re-includes doctrine/ and external/ explicitly, and both are tracked in git,
+# so the build context always carries them.
 COPY doctrine/ /app/doctrine
 COPY external/ /app/external
 

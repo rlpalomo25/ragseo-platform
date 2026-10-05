@@ -98,16 +98,20 @@ services:
       # (POST /api/ingest/doctrine/upload).
       - ./doctrine_uploads:/app/uploads/doctrine
       # The library itself, mounted READ-ONLY so an ops edit is the only way to
-      # change it and nothing the API writes can alter or shadow it.
+      # change it and nothing the API writes can alter or shadow it. It also makes
+      # the library a first-class, backup-able directory on the host instead of an
+      # invisible image layer.
       #
-      # This used to be baked into the image by `COPY doctrine/`. That was
-      # unsafe: the build context is ./backend, so the library has to exist at
-      # backend/doctrine/ on whatever host builds the image. A host without it
-      # builds cleanly and produces an EMPTY /app/doctrine, and the hourly
-      # reconcile then marks all 122 documents `missing` with no error anywhere.
-      # Mounting it makes the library a first-class, backup-able directory on
-      # the host instead of an invisible image layer.
+      # ⚠️ This directory is NOT tracked in git (`.gitignore` has `doctrine/`), so a
+      # fresh clone does not have it and Docker will create it EMPTY — which shadows
+      # the perfectly good copy baked into the image by `COPY doctrine/` and makes
+      # the hourly reconcile mark every document `missing`. The tracked equivalent
+      # is backend/doctrine (identical content). Repointing this mount at
+      # ./backend/doctrine would remove the gap; that also means updating
+      # scripts/restore_doctrine.sh and scripts/backup_db.sh in the same change.
+      # Until then, recovery from an empty mount is scripts/restore_doctrine.sh.
       - ./doctrine:/app/doctrine:ro
+
     depends_on:
       db:
         condition: service_healthy
