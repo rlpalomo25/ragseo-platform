@@ -38,11 +38,18 @@
 #
 # Everything below writes to the same disk as the data it protects. A host loss
 # loses both, which is exactly what happened on 2026-10-01. To copy off-box, set
-# OFFBOX_CMD to a shell command that receives the backup dir as its last
-# argument, for example:
+# OFFBOX_CMD to a shell command; the backup directory is passed to it as "$1".
+# Reference it as "$1" rather than hardcoding a path, for example:
 #
-#   15 2 * * * OFFBOX_CMD='rclone copy /opt/ragseo-platform/backups gdrive:ragseo' \
+#   15 2 * * * OFFBOX_CMD='rclone copy "$1" gdrive:ragseo' \
 #     /opt/ragseo-platform/scripts/backup_db.sh >> /opt/ragseo-platform/backups/backup.log 2>&1
+#
+# ("$1" is deliberate: the script cannot guess where a copy tool wants the
+# source and the destination. An earlier version appended the directory as a bare
+# trailing argument, which silently mangled every rclone-style command — the
+# documented example expanded to
+#   rclone copy /opt/ragseo-platform/backups gdrive:ragseo /opt/.../backups
+# i.e. the destination followed by a second source. Quote it and use "$1".)
 #
 # While OFFBOX_CMD is unset the script still succeeds, but every run logs
 # "OFFBOX NOT CONFIGURED" so the gap stays visible in backup.log rather than
@@ -130,15 +137,24 @@ fi
 file_count=$(tar -tzf "$CONTENT_DEST" | grep -c '/[^/]*$' || true)
 
 # ----------------------------------------------------------------- off-box
+# Non-fatal by design: a broken off-box copy must not stop tonight's local
+# backup, and the local copy is the one that can still be verified by hand. The
+# failure is echoed into the run summary so a single `tail backup.log` shows it.
+offbox_note="OFFBOX NOT CONFIGURED"
 if [ -n "$OFFBOX_CMD" ]; then
-    if bash -c "$OFFBOX_CMD \"$BACKUP_DIR\"" >> "$BACKUP_DIR/offbox.log" 2>&1; then
+    # "$1" is the backup dir; "$0" is a throwaway name. Referencing $1 rather
+    # than appending a bare path is what makes the command composable — see the
+    # OFFBOX_CMD notes at the top of this file.
+    if bash -c "$OFFBOX_CMD" ragseo-backup "$BACKUP_DIR" >> "$BACKUP_DIR/offbox.log" 2>&1; then
+        offbox_note="offbox ok"
         log "offbox copy ok: $OFFBOX_CMD"
     else
-        echo "OFFBOX COPY FAILED $(date -Iseconds) cmd=$OFFBOX_CMD" >> "$BACKUP_DIR/backup.log"
+        offbox_note="OFFBOX COPY FAILED"
+        log "offbox copy FAILED: $OFFBOX_CMD"
     fi
-else
-    echo "OFFBOX NOT CONFIGURED $(date -Iseconds) — backups are on the same host as the data; set OFFBOX_CMD to copy them off-box" >> "$BACKUP_DIR/backup.log"
 fi
+echo "$(date -Iseconds) $offbox_note — backups are on the same host as the data unless OFFBOX_CMD is set" \
+    >> "$BACKUP_DIR/backup.log"
 
 # --------------------------------------------------------------- retention
 find "$BACKUP_DIR" -maxdepth 1 -name 'ragseo_*.dump'     -mtime "+$KEEP_DAYS" -delete
