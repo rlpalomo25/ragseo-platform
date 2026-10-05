@@ -38,6 +38,36 @@ docker inspect -f '{{.Image}}' ragseo-platform-backend-1 ragseo-platform-celery-
 
 Both image IDs must match.
 
+## Backups (once per host — not per deploy)
+
+The database alone is not the recoverable state. `scripts/backup_db.sh` archives
+the `pg_dump` **plus** `doctrine/`, `doctrine_uploads/` and `external_uploads/`;
+losing the host without those files loses uploaded doctrine permanently, because
+nothing else holds those bytes.
+
+Nothing invokes the script automatically. Install it once, on the VPS:
+
+```bash
+mkdir -p /opt/ragseo-platform/backups   # the log redirect below needs it to exist first
+# prove it works BEFORE scheduling it:
+PATH=/usr/local/bin:/usr/bin:/bin /opt/ragseo-platform/scripts/backup_db.sh
+tail -3 /opt/ragseo-platform/backups/backup.log
+ls -la /opt/ragseo-platform/backups
+
+crontab -e   # then add:
+15 2 * * * PATH=/usr/local/bin:/usr/bin:/bin /opt/ragseo-platform/scripts/backup_db.sh >> /opt/ragseo-platform/backups/backup.log 2>&1
+```
+
+- Set `PATH` explicitly: cron runs with a minimal environment and `docker` is
+  often not on the default path, which fails the run in a way that only shows up
+  as an empty log.
+- The run line carries the off-box verdict — `OFFBOX NOT CONFIGURED`,
+  `offbox ok`, or `OFFBOX COPY FAILED`. **Unset means the backups are on the same
+  disk as the data they protect.** To copy off-host, set `OFFBOX_CMD` in the
+  crontab and reference the backup dir as `"$1"`, e.g.
+  `OFFBOX_CMD='rclone copy "$1" gdrive:ragseo'`.
+- Recovery, no rebuild needed: `scripts/restore_doctrine.sh`.
+
 ## Smoke test
 
 ```bash
@@ -72,9 +102,11 @@ docker compose -f docker-compose.prod.yml exec caddy caddy validate --config /et
 - `git pull` runs as root; the repo at `/opt` was tuned with
   `git config --global --add safe.directory /opt/ragseo-platform`.
 - `.env` on the VPS holds real prod secrets and is **untracked** — git never
-  touches it. If a fresh server needs it, the reference copy is
-  `/tmp/opencode/server.env` (on the dev machine); copy it, then `up -d`.
-  **Never** rsync the local dev `.env`.
+  touches it. If a fresh server needs it, copy it from another host you trust
+  (values are `DB_PASSWORD`, `SECRET_KEY`, `SESSION_SECRET`, the Voyage/OpenAI
+  keys, and prod overrides of `DOCTRINE_*` / `*_UPLOAD_PATH`); then `up -d`.
+  **Never** rsync the local dev `.env`. The old reference copy at
+  `/tmp/opencode/server.env` is **gone** — that path no longer holds anything.
 - `external_uploads/` (user uploads) and `frontend/node_modules|.next` are
   untracked and persist across pulls.
 - Baked content (`backend/doctrine`, `backend/external`) is now **tracked**, so
