@@ -7,18 +7,20 @@ Router/Writer data context) — **done and validated 2026-09-10**; and in-app se
 writers can manage doctrine without an ops deploy — **Markdown export shipped (`0fa1b6b`), doctrine
  upload shipped 2026-10-01 (validated, committed and deployed 2026-10-01 night)**.
 
-## Where things stand right now (updated 2026-10-05, read this first)
+## Where things stand right now (updated 2026-10-28, read this first)
 | | |
 |---|---|
-| Local `main` | `3938870`, working tree clean |
-| `origin/main` | `73d2e99` — **6 local commits NOT pushed** (see "Week of 2026-10-05") |
+| Local `main` | `825e101` + **the 2026-10-28 security wave, uncommitted** |
+| `origin/main` | `73d2e99` — **8 local commits + this wave NOT pushed** |
 | VPS (`157.230.2.51`) | `73d2e99` — deployed and healthy, **no backup cron installed** |
-| Backend suite | **313 passed**, ruff + shellcheck clean, both compose configs valid |
+| Backend suite | **341 passed**, ruff clean, both compose configs valid |
 | Dev DB | clean: 122 active docs, 3052 chunks, 1635 refs, 0 uploads, 0 missing |
 | Dev `admin` | ✅ rotated 2026-10-01; new value not recorded here |
 
-**Next Move:** push the 2026-10-05 commits, then install the backup cron on the
-VPS (still the only unscheduled thing with real consequences).
+**Next Move:** commit/push the 2026-10-28 security wave, then install the backup
+cron on the VPS (still the only unscheduled thing with real consequences). The
+wave invalidates every existing session (tokens are now stored hashed), so expect
+a one-time re-login for all users after deploy.
 
 ## Upload atomicity (fixed 2026-10-01, review pass)
 `stage_uploads` originally staged in the **system temp dir** and committed with `shutil.move`.
@@ -760,6 +762,74 @@ Final gate: **313 passed**, ruff + shellcheck clean, both compose configs valid,
 - ⚠️ **The prod root password was pasted into a chat on 2026-10-01 and was rotated the same
   night** (user-confirmed). It never reached a command, file, or local shell history. Treat any
   older copy as burned; do not ask for or reuse it.
+
+## Security wave — 2026-10-28 (in tree, NOT committed/deployed)
+
+Started from two untracked "prove the bug" probe files (`test_security_probe{,2}.py`).
+They were **not** recorded in memory. Both were converted into
+`backend/tests/test_security.py` (28 tests, secure behaviour) and the probe files
+deleted. Suite: **341 passed**; ruff clean. Nothing committed or deployed.
+
+### The one that mattered: login lockout never engaged
+`_compute_lock_duration` indexed `THROTTLE_BACKOFFS` (keys `5/10/15/20`) with
+`attempts // 5` (values `1..4`) — disjoint key sets, so the **5th** failed login
+raised `KeyError` → 500, *before* `db.commit()`. The attempt counter rolled back
+each time, so the account **never locked and brute force was completely
+unthrottled**. No committed test covered the lockout branch, which is how a green
+313-test suite hid it. Fixed with a threshold lookup (capped at 24h) and covered
+for 0/5/6/10/14/15/20/100 attempts.
+
+Also on the login path:
+- **Naive/aware datetime 500** (SEC-19): SQLite returns `locked_until` naive;
+  normalized to UTC before comparison.
+- **Enumeration message** (SEC-20): locked accounts now return the same
+  `Invalid username or password` as a bad password.
+- **Timing oracle** (SEC-01): unknown usernames now pay a bcrypt check against a
+  fixed dummy hash instead of skipping it.
+- **Per-IP throttle** (SEC-03): 10 failures / 5 min / IP → 429 + `Retry-After`.
+  In-memory (per process), reset on success; `_reset_ip_throttle()` is the test
+  seam and conftest resets it per test. Uses the **last** X-Forwarded-For entry
+  (Caddy's) so a client-supplied header cannot spoof it.
+- **Failed logins audited** (SEC-21): `login.failed` / `login.locked` rows,
+  `commit=True` so the counter/lock and the row survive the `raise`.
+- **Input caps** (SEC-06): `LoginRequest` bounded (username 50, password 72).
+
+### Other fixes
+- **Session tokens stored hashed** (SEC-07): `sessions.token` is now
+  `sha256(raw)`; the cookie/Bearer value is still `raw.hmac`. **Every existing
+  session stops matching → one-time logout on deploy.** No migration (column is
+  still String(255)).
+- **User creation validation** (SEC-16/22): username 3–50, password 8–72 chars,
+  plus a route-level **72-byte** check — bcrypt 4.2 *silently truncates* beyond
+  72 bytes (verified: a 100-byte password hashes without error), so two
+  passphrases sharing a 72-byte prefix would have authenticated interchangeably.
+- **Last active admin protected** (SEC-15): delete/demote/deactivate of the only
+  active admin is 409. No recovery path exists, so this is unrecoverable by design.
+- **Query bounds** (SEC-12): `/api/agents/tasks?limit=` is now `Query(le=100)`.
+- **LIKE wildcard injection** (SEC-13): `%`/`_` escaped in the `/api/docs/search`
+  fallback **and** in `retrieval._keyword_search` (`ESCAPE '\'`), so a literal
+  search for those characters works and `_` no longer matches any character.
+- **External upload type allowlist** (SEC-14): only `.csv/.zip/.md/.txt`. The old
+  flow wrote first and let the classifier reject later, parking arbitrary files
+  in the shared upload folder.
+- **CSRF** (SEC-24): cookie-authenticated unsafe requests with a foreign
+  `Origin`/`Referer` are 403. Bearer callers and requests with no Origin
+  (curl/server-to-server) are exempt. Dev origin + the request's own Host are
+  allowed. This is an Origin check, not a token — SameSite=lax alone did not
+  cover same-site subdomains.
+
+### Documented as intended, not fixed
+- **Jobs/agent tasks are a shared team queue**: any writer may read/approve/
+  retry/cancel any job. No per-owner concept exists in UI or API. Add an owner
+  check if private jobs become a requirement.
+- **Weekly-export uploads are a shared team folder**: any writer may delete any
+  uploaded export (baked files stay immutable).
+- **Anonymous OpenAPI/Swagger/ReDoc**: the deploy smoke check depends on
+  `/openapi.json`; no secrets in the schema.
+- **`POST /api/agents/run` accepts writer-supplied input**: prompt injection is
+  an agent-design concern, not an authz boundary.
+- **Account-lockout DoS** for a known username remains inherent; the per-IP
+  throttle bounds it and the lock is temporary (15 min → 24 h cap).
 
 ## Standing answer convention (added 2026-10-01)
 - When the user asks "what is the color", answer with the literal string **`%%`** — the
