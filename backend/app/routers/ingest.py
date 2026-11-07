@@ -53,6 +53,11 @@ router = APIRouter()
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB per uploaded export file
 MAX_DOCTRINE_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB per uploaded doctrine doc
+# Weekly exports are CSV/zip (GSC/Ubersuggest archives), Markdown (domain
+# reports) or plain-text lead summaries. Anything else is not importable; the
+# old "write first, let the classifier reject it" flow let an authenticated
+# writer park arbitrary file types in the shared upload folder.
+EXTERNAL_UPLOAD_SUFFIXES = frozenset({".csv", ".zip", ".md", ".txt"})
 # Per-file caps do not bound a request. Starlette spools the entire multipart
 # body to a temp file *before* the endpoint runs, so an unbounded batch is a
 # disk-exhaustion primitive by a logged-in writer.
@@ -663,6 +668,14 @@ async def upload_external(
         name = safe_filename(f.filename or "")
         if not name:
             continue
+        if Path(name).suffix.lower() not in EXTERNAL_UPLOAD_SUFFIXES:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{name}' is not an accepted export type. Allowed: "
+                    + ", ".join(sorted(EXTERNAL_UPLOAD_SUFFIXES))
+                ),
+            )
         planned.append((name, f))
 
     try:

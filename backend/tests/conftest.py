@@ -85,6 +85,16 @@ def disable_embeddings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def reset_login_throttles():
+    """The per-IP login limiter is process-global; tests must not inherit it."""
+    from app.routers.auth import _reset_ip_throttle
+
+    _reset_ip_throttle()
+    yield
+    _reset_ip_throttle()
+
+
+@pytest.fixture(autouse=True)
 def no_celery_broker(monkeypatch):
     """Keep the suite hermetic: dispatch must never touch the Redis broker.
 

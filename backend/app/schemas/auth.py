@@ -1,9 +1,12 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    # Bounded so an unauthenticated caller cannot force hashing/comparison of
+    # arbitrarily large strings. 72 is bcrypt's significant-byte ceiling; the
+    # username limit matches User.username (String(50)).
+    username: str = Field(max_length=50)
+    password: str = Field(max_length=72)
 
 
 class TokenResponse(BaseModel):

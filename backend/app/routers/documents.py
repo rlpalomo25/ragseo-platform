@@ -16,6 +16,17 @@ from app.services.retrieval import RetrievedChunk, retrieve
 router = APIRouter()
 
 
+def _like_pattern(term: str) -> str:
+    """Wrap ``term`` for a LIKE scan with its wildcards escaped.
+
+    Without this, a user-supplied ``%`` matches every document and ``_`` matches
+    any single character — cheap wildcard injection that also makes a literal
+    search for those characters impossible.
+    """
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def _chunk_stats(db: DBSession, doc_ids: list[UUID] | list[str]) -> dict[str, tuple[int, int]]:
     """Chunk total + embedded count per document, as {id: (chunks, embedded)}."""
     if not doc_ids:
@@ -120,13 +131,13 @@ def search_documents(
         return DocumentList(documents=documents, total=total, page=page, page_size=page_size)
 
     # Fallback: plain keyword match over document fields.
-    search_term = f"%{q}%"
+    search_term = _like_pattern(q)
     query = db.query(Document).filter(
         or_(
-            Document.title.ilike(search_term),
-            Document.content.ilike(search_term),
-            Document.doc_number.ilike(search_term),
-            Document.filename.ilike(search_term),
+            Document.title.ilike(search_term, escape="\\"),
+            Document.content.ilike(search_term, escape="\\"),
+            Document.doc_number.ilike(search_term, escape="\\"),
+            Document.filename.ilike(search_term, escape="\\"),
         )
     )
     total = query.count()

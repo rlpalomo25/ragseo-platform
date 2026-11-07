@@ -86,6 +86,11 @@ def _extract_terms(query: str, limit: int = 8) -> list[str]:
     return terms[:limit]
 
 
+def _escape_like(term: str) -> str:
+    """Escape LIKE metacharacters so ``%``/``_`` in a query are literal text."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @dataclass
 class RetrievedChunk:
     doc_number: str
@@ -158,17 +163,18 @@ def _keyword_search(
     # Rank by how many query terms each chunk/doc matches (title hits weigh 2x).
     # Case-insensitive match via lower()/LIKE — dialect-agnostic (no ILIKE needed).
     score_expr = " + ".join(
-        f"((CASE WHEN lower(c.content) LIKE lower(:term{i}) THEN 1 ELSE 0 END)"
-        f" + (CASE WHEN lower(d.title) LIKE lower(:term{i}) THEN 2 ELSE 0 END))"
+        f"((CASE WHEN lower(c.content) LIKE lower(:term{i}) ESCAPE '\\' THEN 1 ELSE 0 END)"
+        f" + (CASE WHEN lower(d.title) LIKE lower(:term{i}) ESCAPE '\\' THEN 2 ELSE 0 END))"
         for i in range(len(terms))
     )
     where_clauses = " OR ".join(
-        f"(lower(c.content) LIKE lower(:term{i}) OR lower(d.title) LIKE lower(:term{i})"
-        f" OR lower(d.doc_number) LIKE lower(:term{i}))"
+        f"(lower(c.content) LIKE lower(:term{i}) ESCAPE '\\'"
+        f" OR lower(d.title) LIKE lower(:term{i}) ESCAPE '\\'"
+        f" OR lower(d.doc_number) LIKE lower(:term{i}) ESCAPE '\\')"
         for i in range(len(terms))
     )
     filter_clause = ""
-    params: dict = {f"term{i}": f"%{t}%" for i, t in enumerate(terms)}
+    params: dict = {f"term{i}": f"%{_escape_like(t)}%" for i, t in enumerate(terms)}
     params["top_k"] = top_k * 2
     if doc_numbers:
         filter_clause = "AND d.doc_number IN :doc_numbers"

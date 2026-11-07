@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session as DBSession
 
@@ -81,7 +81,7 @@ def trigger_agent(
 @router.get("/agents/tasks")
 def list_tasks(
     agent_type: str | None = None,
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=100),
     user: User = Depends(require_writer),
     db: DBSession = Depends(get_db),
 ):

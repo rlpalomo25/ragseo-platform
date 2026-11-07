@@ -12,6 +12,12 @@ from app.models.user import Session, User
 
 settings = get_settings()
 
+#: bcrypt silently truncates input at 72 bytes (verified on bcrypt 4.2: a
+#: 100-byte password hashes without complaint), so two passphrases that share a
+#: 72-byte prefix would authenticate interchangeably. Reject instead of letting
+#: the caller believe the whole secret is significant.
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
 
 def _sign(raw_token: str) -> str:
     mac = hmac.new(settings.secret_key.encode(), raw_token.encode(), hashlib.sha256).hexdigest()
@@ -29,6 +35,8 @@ def _unsign(signed_token: str) -> str | None:
 
 
 def hash_password(password: str) -> str:
+    if len(password.encode()) > BCRYPT_MAX_PASSWORD_BYTES:
+        raise ValueError(f"Password exceeds bcrypt's {BCRYPT_MAX_PASSWORD_BYTES}-byte limit")
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
@@ -39,13 +47,28 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+def token_digest(raw_token: str) -> str:
+    """SHA-256 of a session token, as stored in the sessions table.
+
+    The cookie/Bearer value is ``raw.hmac``. The HMAC already stops a DB-only
+    leak from being replayed (the secret is not in the DB), and storing only the
+    digest removes the second half of the exposure: an attacker who also gets
+    the signing secret still cannot turn a database dump into live sessions.
+    """
+    return hashlib.sha256(raw_token.encode()).hexdigest()
+
+
 SESSION_MAX_PER_USER = 5
 
 
 def create_session(db: DBSession, user_id: UUID) -> tuple[Session, str]:
-    """Create a session row (raw token stored) and return it with the signed
-    client-facing token. The ORM object keeps the raw token so later commits
-    never persist the signed form.
+    """Create a session row and return it with the signed client-facing token.
+
+    Only the SHA-256 digest of the raw token is stored; the ORM object is
+    refreshed from that row so a later commit can never persist the signed
+    form. Existing rows written before the digest change simply stop matching,
+    which invalidates them (a one-time logout on deploy) rather than leaving
+    plaintext tokens at rest.
 
     Enforces a max concurrent sessions limit per user (SESSION_MAX_PER_USER).
     If the user already has the max number of active sessions, the oldest one
@@ -68,7 +91,7 @@ def create_session(db: DBSession, user_id: UUID) -> tuple[Session, str]:
 
     token = secrets.token_hex(32)
     expires_at = datetime.now(UTC) + timedelta(hours=settings.session_expiry_hours)
-    session = Session(user_id=user_id, token=token, expires_at=expires_at)
+    session = Session(user_id=user_id, token=token_digest(token), expires_at=expires_at)
     db.add(session)
     db.commit()
     db.refresh(session)
@@ -83,7 +106,7 @@ def get_user_by_token(db: DBSession, signed_token: str) -> User | None:
     session = (
         db.query(Session)
         .filter(
-            Session.token == raw_token,
+            Session.token == token_digest(raw_token),
             Session.expires_at > datetime.now(UTC),
         )
         .first()
@@ -98,7 +121,7 @@ def delete_session(db: DBSession, signed_token: str) -> bool:
     raw_token = _unsign(signed_token)
     if not raw_token:
         return False
-    deleted = db.query(Session).filter(Session.token == raw_token).delete()
+    deleted = db.query(Session).filter(Session.token == token_digest(raw_token)).delete()
     db.commit()
     return deleted > 0
 

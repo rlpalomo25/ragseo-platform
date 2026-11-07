@@ -10,9 +10,34 @@ from app.models.user import Session as UserSession
 from app.models.user import User
 from app.schemas.user import CreateUser, UpdateUser, UserList, UserResponse
 from app.services.audit import log_audit
-from app.services.auth_service import hash_password
+from app.services.auth_service import BCRYPT_MAX_PASSWORD_BYTES, hash_password
 
 router = APIRouter()
+
+
+def _other_active_admins(db: DBSession, user: User) -> int:
+    return (
+        db.query(User)
+        .filter(
+            User.role == "admin",
+            User.is_active.is_(True),
+            User.id != user.id,
+        )
+        .count()
+    )
+
+
+def _guard_last_admin(db: DBSession, user: User, action: str) -> None:
+    """Refuse a change that would leave the platform with no active admin.
+
+    There is no password-reset or recovery path, so deleting/demoting the last
+    admin is unrecoverable by design — including an admin doing it to themself.
+    """
+    if user.role == "admin" and user.is_active and _other_active_admins(db, user) == 0:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot {action} the last active admin; promote another admin first",
+        )
 
 
 def _response(user: User) -> UserResponse:
@@ -40,6 +65,11 @@ def create_user(body: CreateUser, admin: User = Depends(require_admin), db: DBSe
         raise HTTPException(status_code=409, detail="Username already exists")
     if body.role not in ("admin", "writer"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'writer'")
+    if len(body.password.encode()) > BCRYPT_MAX_PASSWORD_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password exceeds bcrypt's {BCRYPT_MAX_PASSWORD_BYTES}-byte limit",
+        )
     user = User(
         username=body.username,
         password_hash=hash_password(body.password),
@@ -67,6 +97,14 @@ def update_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if body.role is not None and body.role not in ("admin", "writer"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'writer'")
+
+    final_role = body.role if body.role is not None else user.role
+    final_active = body.is_active if body.is_active is not None else user.is_active
+    if user.role == "admin" and user.is_active and (final_role != "admin" or not final_active):
+        _guard_last_admin(db, user, "demote or deactivate")
 
     # Captured before the writes: an audit row saying "role admin -> writer" is
     # only useful if it records what the value actually was.
@@ -106,6 +144,7 @@ def delete_user(user_id: UUID, admin: User = Depends(require_admin), db: DBSessi
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _guard_last_admin(db, user, "delete")
     user.is_active = False
     user.deleted_at = datetime.now(UTC)
     # Revoke every active session/token for this user immediately.
